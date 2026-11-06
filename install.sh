@@ -55,6 +55,8 @@ print(f'Detected Navidrome DB at: {config.PRIMARY_DB_PATH}')
 echo -e "${YELLOW}[4/5] Setting up systemd service (navidrome-autoplay.service)...${RESET}"
 SERVICE_FILE="/etc/systemd/system/navidrome-autoplay.service"
 
+PYTHON_BIN="$(command -v python3 || echo /usr/bin/python3)"
+
 cat <<EOF > "$SERVICE_FILE"
 [Unit]
 Description=Navidrome Autoplay Recommendation Service
@@ -65,12 +67,12 @@ Wants=navidrome.service
 Type=simple
 User=root
 WorkingDirectory=$APP_DIR
-ExecStart=/usr/bin/python3 $APP_DIR/server.py
+ExecStart=$PYTHON_BIN $APP_DIR/server.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 Environment=AUTOPLAY_PORT=8001
-Environment=AUTOPLAY_HOST=0.0.0.0
+Environment=AUTOPLAY_HOST=127.0.0.1
 
 [Install]
 WantedBy=multi-user.target
@@ -80,10 +82,15 @@ systemctl daemon-reload
 systemctl enable --now navidrome-autoplay
 
 # 6. Verify health
-echo -e "${YELLOW}[5/5] Verifying API health...${RESET}"
-sleep 2
-
-STATUS=$(curl -s http://127.0.0.1:8001/api/status || curl -s http://127.0.0.1:8000/api/status || echo "")
+echo -e "${YELLOW}[5/5] Verifying API health (waiting up to 15s for initial graph build)...${RESET}"
+STATUS=""
+for i in {1..15}; do
+  STATUS=$(curl -s http://127.0.0.1:8001/api/status || curl -s http://127.0.0.1:8000/api/status || echo "")
+  if [[ "$STATUS" == *"online"* ]]; then
+    break
+  fi
+  sleep 1
+done
 
 if [[ "$STATUS" == *"online"* ]]; then
   echo -e "${GREEN}${BOLD}✓ Service is ONLINE and listening on ports 8000 & 8001!${RESET}"

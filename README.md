@@ -162,6 +162,7 @@ These settings can be changed with environment variables:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
+| `AUTOPLAY_HOST` | `127.0.0.1` | Bind address (`0.0.0.0` if running in Docker / separate host) |
 | `AUTOPLAY_PORT` | `8001` | Main HTTP port (the service also listens on 8000) |
 | `NAVIDROME_DB` | `/var/lib/navidrome/navidrome.db` | Path to Navidrome's SQLite database |
 | `MACRO_ANCHOR_WEIGHT` | `0.30` | How strongly the mix stays close to the starting song |

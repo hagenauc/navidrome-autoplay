@@ -1,8 +1,14 @@
 # Personal and runtime databases
 features.db
+*.lock
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Test & coverage
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Logs and runtime files
 *.log
