@@ -1,0 +1,18 @@
+[Unit]
+Description=Navidrome Autoplay Recommendation Service
+After=network.target navidrome.service
+Wants=navidrome.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/navidrome-autoplay
+ExecStart=/usr/bin/python3 /root/navidrome-autoplay/server.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=AUTOPLAY_PORT=8001
+Environment=AUTOPLAY_HOST=0.0.0.0
+
+[Install]
+WantedBy=multi-user.target
