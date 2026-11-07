@@ -201,9 +201,13 @@ def create_app(engine_instance=None, start_sync: bool = False) -> Flask:
                 conn = sqlite3.connect(config.FEATURES_DB_PATH, timeout=10)
                 try:
                     c = conn.cursor()
-                    analyzed_count = c.execute(
-                        "SELECT count(*) FROM track_features WHERE COALESCE(status, 'ok') = 'ok'"
-                    ).fetchone()[0]
+                    cols = {r[1] for r in c.execute("PRAGMA table_info(track_features)").fetchall()}
+                    if "status" in cols:
+                        analyzed_count = c.execute(
+                            "SELECT count(*) FROM track_features WHERE COALESCE(status, 'ok') = 'ok'"
+                        ).fetchone()[0]
+                    elif cols:
+                        analyzed_count = c.execute("SELECT count(*) FROM track_features").fetchone()[0]
                 finally:
                     conn.close()
             except Exception as e:
@@ -254,6 +258,14 @@ def run_production_server():
     bind_addrs = [f"{config.HOST}:{config.PORT}"]
     if config.SECONDARY_PORT and config.SECONDARY_PORT != config.PORT:
         bind_addrs.append(f"{config.HOST}:{config.SECONDARY_PORT}")
+
+    if not engine.tracks:
+        try:
+            if not engine.db_path:
+                engine.db_path = config.resolve_db_path()
+            engine.load_database()
+        except Exception as e:
+            logger.warning(f"Initial database load failed: {e}")
 
     ensure_background_sync(app)
 

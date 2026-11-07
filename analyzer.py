@@ -261,9 +261,14 @@ def pending_track_ids(navidrome_ids, f_conn) -> set:
     """IDs that still need analysis: never analyzed, or failed more than a day ago."""
     done = set()
     cutoff = time.time() - RETRY_FAILED_AFTER_SECONDS
-    for item_id, status, updated_at in f_conn.execute(
-            "SELECT item_id, COALESCE(status, 'ok'), COALESCE(updated_at, 0) FROM track_features"):
-        if status == 'ok' or updated_at > cutoff:
+    cols = {r[1] for r in f_conn.execute("PRAGMA table_info(track_features)").fetchall()}
+    if "status" in cols:
+        for item_id, status, updated_at in f_conn.execute(
+                "SELECT item_id, COALESCE(status, 'ok'), COALESCE(updated_at, 0) FROM track_features"):
+            if status == 'ok' or updated_at > cutoff:
+                done.add(item_id)
+    else:
+        for (item_id,) in f_conn.execute("SELECT item_id FROM track_features"):
             done.add(item_id)
     return set(navidrome_ids) - done
 
