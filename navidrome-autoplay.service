@@ -7,8 +7,8 @@ Wants=navidrome.service
 Type=simple
 User=navidrome
 Group=navidrome
-WorkingDirectory=/root/navidrome-autoplay
-ExecStart=/root/navidrome-autoplay/.venv/bin/gunicorn --workers 1 --threads 4 --timeout 30 --bind 127.0.0.1:8001 --bind 127.0.0.1:8000 "server:create_app()"
+WorkingDirectory=/opt/navidrome-autoplay
+ExecStart=/opt/navidrome-autoplay/.venv/bin/python /opt/navidrome-autoplay/server.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -20,7 +20,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/root/navidrome-autoplay /tmp
+ReadWritePaths=/opt/navidrome-autoplay /tmp
 
 [Install]
 WantedBy=multi-user.target

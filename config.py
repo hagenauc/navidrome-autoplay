@@ -11,8 +11,10 @@ FEATURES_DB_PATH = os.environ.get("AUTOPLAY_FEATURES_DB", os.path.join(APP_DIR, 
 MUSIC_DIR = os.environ.get("NAVIDROME_MUSIC_DIR", "/opt/navidrome/music")
 
 # Server configuration
-# Bind to localhost by default. Set AUTOPLAY_HOST=0.0.0.0 if Navidrome runs in another
-# container / on another machine (the API has no authentication!).
+# This service has no Web UI and only serves JSON to the local Navidrome plugin.
+# Binding to 127.0.0.1 (localhost) is sufficient and recommended when running on
+# the same machine as Navidrome. Only set AUTOPLAY_HOST=0.0.0.0 if Navidrome runs
+# in a separate container/VM without host network access.
 HOST = os.environ.get("AUTOPLAY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("AUTOPLAY_PORT", "8001"))
 # Optional second port for compatibility with plugin configs pointing at 8000. 0 = disabled.

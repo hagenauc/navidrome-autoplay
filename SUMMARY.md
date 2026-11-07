@@ -148,8 +148,8 @@ The test server was running in an isolated environment Navidrome couldn't reach,
 
 ### What fixed it for me
 1. Stopped my previous AudioMuse-AI containers so they wouldn't conflict on the same ports.
-2. Installed the service as a regular systemd service on the host.
-3. Had `server.py` listen on both ports **8000** and **8001**, so either URL works in the plugin settings.
+2. Installed the service as a regular systemd service on the same host as Navidrome, bound to `127.0.0.1` (`localhost` — there is no Web UI, so it only needs to be reachable by Navidrome locally).
+3. Had `server.py` listen on both ports **8000** and **8001** (`http://127.0.0.1:8000` and `http://127.0.0.1:8001`), so either URL works in the plugin settings.
 
 ---
 

@@ -117,8 +117,10 @@ sudo ./install.sh
 The install script:
 1. Installs system packages (`ffmpeg`, `python3-dev`, `build-essential`, `libaubio-dev`).
 2. Installs [`uv`](https://docs.astral.sh/uv/) (if not already present) and runs `uv sync --no-dev` to create `.venv` from `pyproject.toml` and `uv.lock`.
-3. Sets up and starts a hardened systemd service (`navidrome-autoplay.service`) running as an unprivileged service user.
-4. Checks that the service responds on ports **8000** and **8001**.
+3. Sets up and starts a hardened systemd service (`navidrome-autoplay.service`).
+4. Checks that the service responds locally on `127.0.0.1` ports **8000** and **8001**.
+
+> **Note:** This service has **no Web UI** — it is a backend-only JSON API called by Navidrome's AudioMuse-AI plugin. By default it binds exclusively to `127.0.0.1` (`localhost`), which is all you need when running on the same machine as Navidrome.
 
 Since the script runs as root and installs packages, please look through [install.sh](install.sh) before you run it.
 
@@ -162,7 +164,7 @@ These settings can be changed with environment variables:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `AUTOPLAY_HOST` | `127.0.0.1` | Bind address (`0.0.0.0` if running in Docker / separate host) |
+| `AUTOPLAY_HOST` | `127.0.0.1` | Bind address. Since there is no Web UI, `127.0.0.1` (localhost) is sufficient whenever Navidrome runs on the same machine. Only set `0.0.0.0` if Navidrome runs in an isolated container/host. |
 | `AUTOPLAY_PORT` | `8001` | Main HTTP port (the service also listens on 8000) |
 | `NAVIDROME_DB` | `/var/lib/navidrome/navidrome.db` | Path to Navidrome's SQLite database |
 | `MACRO_ANCHOR_WEIGHT` | `0.30` | How strongly the mix stays close to the starting song |

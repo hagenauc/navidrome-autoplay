@@ -27,13 +27,21 @@ fi
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$APP_DIR"
 
-# Determine service user: prefer 'navidrome', fallback to creating 'navidrome'
-SERVICE_USER="navidrome"
-if ! id "$SERVICE_USER" &>/dev/null; then
-    useradd -r -s /usr/sbin/nologin navidrome 2>/dev/null || true
+# Determine service user: if installed inside /root or /home, systemd's ProtectHome
+# or 0700 home directory permissions block unprivileged users, so only drop privileges
+# when installed in a system path like /opt or /srv.
+if [[ "$APP_DIR" == /root/* || "$APP_DIR" == /home/* ]]; then
+    SERVICE_USER="root"
+    SERVICE_GROUP="root"
+    PROTECT_HOME="false"
+else
     SERVICE_USER="navidrome"
+    if ! id "$SERVICE_USER" &>/dev/null; then
+        useradd -r -s /usr/sbin/nologin navidrome 2>/dev/null || true
+    fi
+    SERVICE_GROUP="$(id -gn "$SERVICE_USER" 2>/dev/null || echo "$SERVICE_USER")"
+    PROTECT_HOME="true"
 fi
-SERVICE_GROUP="$(id -gn "$SERVICE_USER" 2>/dev/null || echo "$SERVICE_USER")"
 
 # 2. System dependencies (do not swallow errors with || true)
 echo -e "${YELLOW}[1/5] Checking system packages (python3, ffmpeg, build tools)...${RESET}"
@@ -74,11 +82,6 @@ print(f'Detected Navidrome DB at: {config.PRIMARY_DB_PATH}')
 echo -e "${YELLOW}[4/5] Setting up systemd service (navidrome-autoplay.service)...${RESET}"
 SERVICE_FILE="/etc/systemd/system/navidrome-autoplay.service"
 
-GUNICORN_BIN="$VENV_DIR/bin/gunicorn"
-if [ ! -x "$GUNICORN_BIN" ]; then
-    GUNICORN_BIN="$(command -v gunicorn || echo "$VENV_DIR/bin/python -m gunicorn")"
-fi
-
 cat <<EOF > "$SERVICE_FILE"
 [Unit]
 Description=Navidrome Autoplay Recommendation Service
@@ -90,7 +93,7 @@ Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_GROUP
 WorkingDirectory=$APP_DIR
-ExecStart=$GUNICORN_BIN --workers 1 --threads 4 --timeout 30 --bind 127.0.0.1:8001 --bind 127.0.0.1:8000 "server:create_app()"
+ExecStart=$VENV_DIR/bin/python $APP_DIR/server.py
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -101,15 +104,12 @@ Environment=AUTOPLAY_HOST=127.0.0.1
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=$PROTECT_HOME
 ReadWritePaths=$APP_DIR /tmp
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-# Also keep the repository copy in sync
-cp "$SERVICE_FILE" "$APP_DIR/navidrome-autoplay.service" 2>/dev/null || true
 
 if command -v systemctl &>/dev/null && [ -d /run/systemd/system ]; then
     systemctl daemon-reload
