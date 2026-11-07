@@ -106,23 +106,23 @@ These are informal numbers from my own server (a library of about 6,400 tracks).
 
 ## Installation
 
-On the machine running Navidrome (Linux x86_64 or ARM64):
+On the machine running Navidrome (Linux x86_64 or ARM64), run the installer as the same user that has read access to `navidrome.db` and your music library (`root`/`sudo` is **not** required if `python3`, `ffmpeg`, and a C compiler are already installed):
 
 ```bash
-git clone https://github.com/hagenauc/navidrome-autoplay.git /opt/navidrome-autoplay
-cd /opt/navidrome-autoplay
-sudo ./install.sh
+git clone https://github.com/hagenauc/navidrome-autoplay.git
+cd navidrome-autoplay
+./install.sh
 ```
 
 The install script:
-1. Installs system packages (`ffmpeg`, `python3-dev`, `build-essential`, `libaubio-dev`).
-2. Installs [`uv`](https://docs.astral.sh/uv/) (if not already present) and runs `uv sync --no-dev` to create `.venv` from `pyproject.toml` and `uv.lock`.
-3. Sets up and starts a hardened systemd service (`navidrome-autoplay.service`).
+1. Checks that `python3`, `ffmpeg`, and `cc` are present (only calling the OS package manager if one is missing).
+2. Installs [`uv`](https://docs.astral.sh/uv/) into `~/.local/bin` (if not already present) and runs `uv sync --no-dev` to create `.venv` from `pyproject.toml` and `uv.lock`.
+3. Starts the service using `systemctl --user` (when run as a regular user), `/etc/systemd/system/navidrome-autoplay.service` (when run as root, e.g. in an LXC container), or `./service.sh`.
 4. Checks that the service responds locally on `127.0.0.1` ports **8000** and **8001**.
 
 > **Note:** This service has **no Web UI** — it is a backend-only JSON API called by Navidrome's AudioMuse-AI plugin. By default it binds exclusively to `127.0.0.1` (`localhost`), which is all you need when running on the same machine as Navidrome.
 
-Since the script runs as root and installs packages, please look through [install.sh](install.sh) before you run it.
+Please look through [install.sh](install.sh) before you run it.
 
 ---
 
