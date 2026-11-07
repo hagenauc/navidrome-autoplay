@@ -115,8 +115,8 @@ sudo ./install.sh
 ```
 
 The install script:
-1. Installs system packages (`ffmpeg`, `python3-pip`, `python3-venv`, `libaubio-dev`).
-2. Creates a local virtual environment (`.venv`) and installs the Python dependencies from `requirements.txt` (including `gunicorn`).
+1. Installs system packages (`ffmpeg`, `python3-dev`, `build-essential`, `libaubio-dev`).
+2. Installs [`uv`](https://docs.astral.sh/uv/) (if not already present) and runs `uv sync --no-dev` to create `.venv` from `pyproject.toml` and `uv.lock`.
 3. Sets up and starts a hardened systemd service (`navidrome-autoplay.service`) running as an unprivileged service user.
 4. Checks that the service responds on ports **8000** and **8001**.
 
@@ -131,7 +131,7 @@ Since the script runs as root and installs packages, please look through [instal
 ```bash
 cd /opt/navidrome-autoplay
 # Run with 6 worker processes
-.venv/bin/python analyzer.py 6
+uv run analyzer.py 6
 ```
 
 Results are saved to `features.db` as the analyzer runs. The server reloads new results about every 15 seconds, so you don't need to restart it.

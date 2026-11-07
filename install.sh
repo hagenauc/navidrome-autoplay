@@ -39,21 +39,21 @@ SERVICE_GROUP="$(id -gn "$SERVICE_USER" 2>/dev/null || echo "$SERVICE_USER")"
 echo -e "${YELLOW}[1/5] Checking system packages (python3, ffmpeg, build tools)...${RESET}"
 if command -v apt-get &> /dev/null; then
     apt-get update -qq
-    apt-get install -y -qq python3 python3-pip python3-venv ffmpeg libaubio-dev libaubio5
+    apt-get install -y -qq curl python3 python3-dev build-essential ffmpeg libaubio-dev libaubio5
 elif command -v dnf &> /dev/null; then
-    dnf install -y -q python3 python3-pip python3-virtualenv ffmpeg
+    dnf install -y -q curl python3 python3-devel gcc ffmpeg
 elif command -v pacman &> /dev/null; then
-    pacman -Sy --noconfirm python python-pip ffmpeg aubio
+    pacman -Sy --noconfirm curl python base-devel ffmpeg aubio
 fi
 
-# 3. Python virtual environment & dependencies
-echo -e "${YELLOW}[2/5] Setting up virtual environment and Python dependencies...${RESET}"
-VENV_DIR="$APP_DIR/.venv"
-if [ ! -d "$VENV_DIR" ]; then
-    python3 -m venv "$VENV_DIR"
+# 3. Install uv (if not present) & sync project environment
+echo -e "${YELLOW}[2/5] Setting up uv and syncing Python dependencies...${RESET}"
+if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
 fi
-"$VENV_DIR/bin/pip" install --upgrade pip --quiet
-"$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt" --quiet
+UV_BIN="$(command -v uv || echo /usr/local/bin/uv)"
+VENV_DIR="$APP_DIR/.venv"
+"$UV_BIN" sync --no-dev --project "$APP_DIR"
 
 # Ensure permissions for the service user on APP_DIR
 chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR"
@@ -137,7 +137,7 @@ echo ""
 echo -e "${BOLD}${GREEN}Installation Complete!${RESET}"
 echo "----------------------------------------------------------------------"
 echo -e "To scan all audio files for exact BPM and Camelot keys, run:"
-echo -e "  ${CYAN}$VENV_DIR/bin/python analyzer.py${RESET}"
+echo -e "  ${CYAN}uv run analyzer.py${RESET}"
 echo ""
 echo -e "In Navidrome, set the AudioMuse-AI plugin API URL to:"
 echo -e "  ${CYAN}http://127.0.0.1:8001${RESET} (or http://127.0.0.1:8000)"

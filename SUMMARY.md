@@ -82,11 +82,13 @@ It's written in Python using `numpy`, `scipy`, `scikit-learn`, `aubio`, and `mut
 
 ```
 navidrome-autoplay/
+├── pyproject.toml             # Project metadata & dependencies (managed with uv)
+├── uv.lock                    # Locked dependency graph for reproducible installs
 ├── config.py                  # Settings, weights, and ports
 ├── engine.py                  # Similarity map, session tracking, transition scoring
 ├── analyzer.py                # Multi-core BPM, key, and genre extraction
 ├── server.py                  # Flask/Gunicorn API compatible with the AudioMuse-AI Navidrome plugin
-├── install.sh                 # Automated installer (.venv + hardened systemd service)
+├── install.sh                 # Automated installer (uv sync + hardened systemd service)
 ├── service.sh                 # Helper script (start, stop, restart, status)
 ├── navidrome-autoplay.service # Hardened systemd unit file
 ├── test_autoplay.py           # Unit tests for engine and analyzer

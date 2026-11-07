@@ -1,6 +1,7 @@
 # Personal and runtime databases
 features.db
 *.lock
+!uv.lock
 *.db-journal
 *.db-wal
 *.db-shm
