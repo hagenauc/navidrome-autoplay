@@ -34,8 +34,10 @@ RANDOMIZATION_TEMPERATURE = float(os.environ.get("AUTOPLAY_TEMPERATURE", "0.20")
 MAX_ARTIST_REPEAT_IN_QUEUE = int(os.environ.get("MAX_ARTIST_REPEAT_IN_QUEUE", "2"))
 BPM_TOLERANCE_PCT = float(os.environ.get("BPM_TOLERANCE_PCT", "0.10"))  # 10% tempo transition window
 
-# In-memory session tracking TTL (seconds)
+# In-memory session tracking TTL (seconds) and LRU capacity cap
 SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", "7200"))
+MAX_SESSIONS = int(os.environ.get("MAX_SESSIONS", "1000"))
+AUTOPLAY_API_KEY = os.environ.get("AUTOPLAY_API_KEY", "")
 
 
 def resolve_db_path() -> str:

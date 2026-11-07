@@ -115,9 +115,9 @@ sudo ./install.sh
 ```
 
 The install script:
-1. Installs system packages (`ffmpeg`, `python3-pip`, `libaubio-dev`).
-2. Installs the Python dependencies from `requirements.txt`.
-3. Sets up and starts a systemd service (`navidrome-autoplay.service`).
+1. Installs system packages (`ffmpeg`, `python3-pip`, `python3-venv`, `libaubio-dev`).
+2. Creates a local virtual environment (`.venv`) and installs the Python dependencies from `requirements.txt` (including `gunicorn`).
+3. Sets up and starts a hardened systemd service (`navidrome-autoplay.service`) running as an unprivileged service user.
 4. Checks that the service responds on ports **8000** and **8001**.
 
 Since the script runs as root and installs packages, please look through [install.sh](install.sh) before you run it.
@@ -131,7 +131,7 @@ Since the script runs as root and installs packages, please look through [instal
 ```bash
 cd /opt/navidrome-autoplay
 # Run with 6 worker processes
-python3 analyzer.py 6
+.venv/bin/python analyzer.py 6
 ```
 
 Results are saved to `features.db` as the analyzer runs. The server reloads new results about every 15 seconds, so you don't need to restart it.
@@ -170,6 +170,9 @@ These settings can be changed with environment variables:
 | `AUTOPLAY_TEMPERATURE` | `0.20` | Amount of variety (0.0 = the same mix every time) |
 | `MAX_ARTIST_REPEAT_IN_QUEUE` | `2` | Maximum songs per artist in a queue |
 | `BPM_TOLERANCE_PCT` | `0.10` | Tempo difference allowed before a penalty applies (10%) |
+| `SESSION_TTL_SECONDS` | `7200` | In-memory session expiration time in seconds |
+| `MAX_SESSIONS` | `1000` | Maximum number of active sessions kept in the LRU cache |
+| `AUTOPLAY_API_KEY` | `""` | Optional API key required for `POST /api/reload` (`X-API-Key` header or `api_key` query param) |
 
 ---
 
@@ -190,7 +193,7 @@ journalctl -u navidrome-autoplay -f   # Follow the logs
 * `GET /api/similar_artists?artist=<name_or_id>&count=10`: Related artists.
 * `GET /api/find_path?start_song_id=<id>&end_song_id=<id>&count=5`: A short path of songs connecting two tracks.
 * `GET /api/analysis_status`: How much of the library has been analyzed.
-* `POST /api/reload`: Reload the database and rebuild the similarity map after adding music.
+* `POST /api/reload`: Reload the database and rebuild the similarity map after adding music (restricted to loopback unless `AUTOPLAY_API_KEY` is configured).
 
 ---
 

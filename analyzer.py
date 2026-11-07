@@ -6,11 +6,15 @@ import re
 import sqlite3
 import subprocess
 import multiprocessing as mp
+import logging
 import numpy as np
 import scipy.signal
 import aubio
 import mutagen
 import config
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
+logger = logging.getLogger("navidrome_autoplay.analyzer")
 
 MUSIC_DIR = config.MUSIC_DIR
 FEATURES_DB_PATH = config.FEATURES_DB_PATH
@@ -39,24 +43,28 @@ MINOR_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 
 
 def init_features_db():
     conn = sqlite3.connect(FEATURES_DB_PATH, timeout=30)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS track_features (
-            item_id TEXT PRIMARY KEY,
-            bpm REAL,
-            key_name TEXT,
-            camelot TEXT,
-            genre TEXT,
-            energy REAL,
-            updated_at REAL
-        )
-    """)
-    cols = [r[1] for r in c.execute("PRAGMA table_info(track_features)")]
-    if 'status' not in cols:
-        # 'ok' | 'missing' (file not found) | 'error' (could not decode)
-        c.execute("ALTER TABLE track_features ADD COLUMN status TEXT DEFAULT 'ok'")
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS track_features (
+                item_id TEXT PRIMARY KEY,
+                bpm REAL,
+                key_name TEXT,
+                camelot TEXT,
+                genre TEXT,
+                energy REAL,
+                updated_at REAL
+            )
+        """)
+        cols = [r[1] for r in c.execute("PRAGMA table_info(track_features)")]
+        if 'status' not in cols:
+            # 'ok' | 'missing' (file not found) | 'error' (could not decode)
+            c.execute("ALTER TABLE track_features ADD COLUMN status TEXT DEFAULT 'ok'")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def parse_key_tag(raw: str):
@@ -171,10 +179,24 @@ def analyze_track(item):
     """Returns a row for track_features. Never returns None, so failures are recorded
     (with a status) instead of being retried on every run."""
     item_id, rel_path, db_bpm, db_genre = item
-    full_path = os.path.join(MUSIC_DIR, rel_path or '')
     now = time.time()
 
-    if not rel_path or not os.path.exists(full_path):
+    if not rel_path:
+        return (item_id, 0.0, "", "", db_genre or "", None, now, 'missing')
+
+    # Security: guard against path traversal outside MUSIC_DIR
+    real_music_dir = os.path.realpath(MUSIC_DIR)
+    clean_rel = rel_path.lstrip(os.sep)
+    candidate_path = os.path.join(real_music_dir, clean_rel)
+    real_full_path = os.path.realpath(candidate_path)
+
+    try:
+        if os.path.commonpath([real_music_dir, real_full_path]) != real_music_dir:
+            return (item_id, 0.0, "", "", db_genre or "", None, now, 'missing')
+    except (ValueError, Exception):
+        return (item_id, 0.0, "", "", db_genre or "", None, now, 'missing')
+
+    if not os.path.exists(real_full_path) or not os.path.isfile(real_full_path):
         return (item_id, 0.0, "", "", db_genre or "", None, now, 'missing')
 
     genre = db_genre or ""
@@ -184,7 +206,7 @@ def analyze_track(item):
 
     # 1. Existing tags
     try:
-        m = mutagen.File(full_path)
+        m = mutagen.File(real_full_path)
         if m:
             if not genre:
                 g = m.get('genre') or m.get('GENRE') or m.get('TCON') or m.get('\xa9gen')
@@ -206,7 +228,7 @@ def analyze_track(item):
     # 2. Always decode audio: energy must be measured the same way for every track
     status = 'ok'
     try:
-        samples = _decode_slice(full_path)
+        samples = _decode_slice(real_full_path)
         if samples is None:
             status = 'error'
         else:
@@ -249,7 +271,7 @@ def pending_track_ids(navidrome_ids, f_conn) -> set:
 def run_analysis(workers: int = 4, limit: int = None):
     lock = acquire_single_instance_lock()
     if lock is None:
-        print("[Analyzer] Another analyzer instance is already running. Exiting.")
+        logger.info("Another analyzer instance is already running. Exiting.")
         return
 
     try:
@@ -257,57 +279,62 @@ def run_analysis(workers: int = 4, limit: int = None):
 
         # Same DB selection as the engine (primary first), so new uploads get analyzed.
         conn = config.connect_ro(config.resolve_db_path())
-        all_tracks = conn.execute("SELECT id, path, bpm, genre FROM media_file").fetchall()
-        conn.close()
+        try:
+            mf_cols = {col[1] for col in conn.execute("PRAGMA table_info(media_file)").fetchall()}
+            genre_select = "genre" if "genre" in mf_cols else "'' AS genre"
+            all_tracks = conn.execute(f"SELECT id, path, bpm, {genre_select} FROM media_file").fetchall()
+        finally:
+            conn.close()
 
         f_conn = sqlite3.connect(FEATURES_DB_PATH, timeout=30)
-        fc = f_conn.cursor()
-        pending = pending_track_ids([t[0] for t in all_tracks], f_conn)
-        to_process = [t for t in all_tracks if t[0] in pending]
-        if limit:
-            to_process = to_process[:limit]
+        try:
+            fc = f_conn.cursor()
+            pending = pending_track_ids([t[0] for t in all_tracks], f_conn)
+            to_process = [t for t in all_tracks if t[0] in pending]
+            if limit:
+                to_process = to_process[:limit]
 
-        total = len(all_tracks)
-        print(f"[Analyzer] Total library: {total} tracks.")
-        print(f"[Analyzer] Already analyzed: {total - len(pending)}. Remaining to process: {len(to_process)}.")
+            total = len(all_tracks)
+            logger.info(f"Total library: {total} tracks.")
+            logger.info(f"Already analyzed: {total - len(pending)}. Remaining to process: {len(to_process)}.")
 
-        if not to_process:
-            print("[Analyzer] All tracks already analyzed!")
+            if not to_process:
+                logger.info("All tracks already analyzed!")
+                return
+
+            insert_sql = """
+                INSERT OR REPLACE INTO track_features
+                (item_id, bpm, key_name, camelot, genre, energy, updated_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            buffer = []
+            t_start = time.time()
+            processed = 0
+            failed = 0
+
+            with mp.Pool(processes=workers) as pool:
+                for res in pool.imap_unordered(analyze_track, to_process, chunksize=10):
+                    buffer.append(res)
+                    processed += 1
+                    if res[-1] != 'ok':
+                        failed += 1
+                    if len(buffer) >= 50:
+                        fc.executemany(insert_sql, buffer)
+                        f_conn.commit()
+                        buffer.clear()
+                        elapsed = time.time() - t_start
+                        rate = processed / elapsed if elapsed > 0 else 0
+                        logger.info(f"Progress: {processed}/{len(to_process)} "
+                                    f"({failed} failed) — {rate:.1f} tracks/sec")
+
+            if buffer:
+                fc.executemany(insert_sql, buffer)
+                f_conn.commit()
+
+            logger.info(f"Finished analyzing {processed} tracks ({failed} missing/failed) "
+                        f"in {time.time() - t_start:.1f}s.")
+        finally:
             f_conn.close()
-            return
-
-        insert_sql = """
-            INSERT OR REPLACE INTO track_features
-            (item_id, bpm, key_name, camelot, genre, energy, updated_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """
-        buffer = []
-        t_start = time.time()
-        processed = 0
-        failed = 0
-
-        with mp.Pool(processes=workers) as pool:
-            for res in pool.imap_unordered(analyze_track, to_process, chunksize=10):
-                buffer.append(res)
-                processed += 1
-                if res[-1] != 'ok':
-                    failed += 1
-                if len(buffer) >= 50:
-                    fc.executemany(insert_sql, buffer)
-                    f_conn.commit()
-                    buffer.clear()
-                    elapsed = time.time() - t_start
-                    rate = processed / elapsed if elapsed > 0 else 0
-                    print(f"[Analyzer] Progress: {processed}/{len(to_process)} "
-                          f"({failed} failed) — {rate:.1f} tracks/sec", flush=True)
-
-        if buffer:
-            fc.executemany(insert_sql, buffer)
-            f_conn.commit()
-
-        f_conn.close()
-        print(f"[Analyzer] Finished analyzing {processed} tracks ({failed} missing/failed) "
-              f"in {time.time() - t_start:.1f}s.")
     finally:
         lock.close()
 

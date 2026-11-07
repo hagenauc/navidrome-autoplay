@@ -4,12 +4,16 @@ import copy
 import json
 import time
 import threading
+import logging
+from collections import defaultdict, Counter, OrderedDict
 import numpy as np
-from collections import defaultdict, Counter
 from scipy.sparse import coo_matrix, identity
 from sklearn.decomposition import TruncatedSVD
 from sklearn.preprocessing import normalize
 import config
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
+logger = logging.getLogger("navidrome_autoplay.engine")
 
 # ---------------------------------------------------------------------------
 # String helpers
@@ -238,6 +242,10 @@ class EngineState:
         self.genres = []
         self.prim_artist = []
         self.clean_keys = []
+        self.base_rows = []
+        self.base_cols = []
+        self.base_vals = []
+        self.genre_tokens = []
 
 
 def _features_mtime(path: str) -> float:
@@ -252,18 +260,32 @@ def _features_mtime(path: str) -> float:
 
 def _apply_features(tracks: dict, features_db_path: str) -> int:
     """Overlay analyzer results onto track dicts. Energy becomes a 0..1 library percentile."""
-    if not os.path.exists(features_db_path):
+    if not features_db_path or not os.path.exists(features_db_path):
         return 0
     import sqlite3
-    conn = sqlite3.connect(features_db_path, timeout=10)
+    conn = sqlite3.connect(f"file:{features_db_path}?mode=ro", uri=True, timeout=10)
     try:
-        rows = conn.execute(
-            "SELECT item_id, bpm, key_name, camelot, genre, energy FROM track_features").fetchall()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(track_features)").fetchall()}
+        has_status = "status" in cols
+        if has_status:
+            rows = conn.execute(
+                "SELECT item_id, bpm, key_name, camelot, genre, energy, COALESCE(status, 'ok') FROM track_features"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT item_id, bpm, key_name, camelot, genre, energy FROM track_features"
+            ).fetchall()
     finally:
         conn.close()
 
     raw_energy = {}
-    for fid, fbpm, fkey, fcam, fgen, fen in rows:
+    for r in rows:
+        if has_status:
+            fid, fbpm, fkey, fcam, fgen, fen, fstatus = r
+        else:
+            fid, fbpm, fkey, fcam, fgen, fen = r
+            fstatus = 'ok'
+
         t = tracks.get(fid)
         if t is None:
             continue
@@ -275,14 +297,22 @@ def _apply_features(tracks: dict, features_db_path: str) -> int:
             t['camelot'] = fcam
         if fgen:
             t['genre'] = fgen
-        # Older analyzer versions stored a 0.5 placeholder when no audio was decoded.
-        if fen is not None and fen > 0 and abs(fen - 0.5) > 1e-9:
-            raw_energy[fid] = fen
+
+        # Energy normalization: rely on status == 'ok'
+        if has_status:
+            if fen is not None and fen > 0 and fstatus == 'ok':
+                raw_energy[fid] = fen
+        else:
+            if fen is not None and fen > 0 and abs(fen - 0.5) > 1e-9:
+                raw_energy[fid] = fen
 
     if raw_energy:
         ids = list(raw_energy)
         vals = np.array([raw_energy[i] for i in ids])
-        ranks = vals.argsort().argsort() / max(1, len(vals) - 1)
+        if len(vals) == 1:
+            ranks = np.array([0.5])
+        else:
+            ranks = vals.argsort().argsort() / float(len(vals) - 1)
         for tid, r in zip(ids, ranks):
             tracks[tid]['energy'] = float(r)
     return len(rows)
@@ -295,7 +325,7 @@ def _compute_feature_arrays(st: EngineState):
         t['cluster'] = get_macro_cluster(t)
     st.a_cluster = np.array([_C[t['cluster']] for t in tr], dtype=np.int8)
     st.a_bpm = np.array([t['bpm'] or 0.0 for t in tr], dtype=np.float64)
-    st.a_energy = np.array([np.nan if t['energy'] is None else t['energy'] for t in tr])
+    st.a_energy = np.array([np.nan if t['energy'] is None else t['energy'] for t in tr], dtype=np.float64)
     cams = [parse_camelot(t['camelot']) for t in tr]
     st.a_cam_num = np.array([c[0] for c in cams], dtype=np.int16)
     st.a_cam_mode = np.array([c[1] for c in cams], dtype=np.int8)
@@ -311,24 +341,99 @@ def _compute_feature_arrays(st: EngineState):
         gidx.append(genre_index[g])
     st.genres = list(genre_index)
     st.a_genre = np.array(gidx, dtype=np.int32)
+    st.genre_tokens = [
+        set(p.strip().lower() for p in re.split(r'\s*[/,;|]\s*', g) if p.strip())
+        for g in st.genres
+    ]
+
+
+def _rebuild_graph_and_svd(st: EngineState):
+    """Rebuild 5c. Cluster BPM neighbours graph edges and SVD embeddings."""
+    n = len(st.track_ids)
+    shape = (n, n)
+    if n == 0:
+        st.embeddings = np.zeros((0, 0), dtype=np.float32)
+        return
+    if n == 1:
+        st.embeddings = np.zeros((1, 1), dtype=np.float32)
+        return
+
+    idx = st.id_to_idx
+    rows_i = list(st.base_rows)
+    cols_i = list(st.base_cols)
+    vals = list(st.base_vals)
+
+    # 5c. Cluster BPM neighbours + token-related artists (only tracks with a known BPM)
+    cluster_tids = defaultdict(list)
+    for tid in st.track_ids:
+        if st.tracks[tid]['bpm'] > 0:
+            cluster_tids[st.tracks[tid]['cluster']].append(tid)
+    for tids in cluster_tids.values():
+        tids.sort(key=lambda x: st.tracks[x]['bpm'])
+        L = len(tids)
+        for i in range(L):
+            a = idx[tids[i]]
+            ai = st.a_artist[a]
+            for j in range(max(0, i - 2), min(L, i + 3)):
+                if i != j:
+                    b = idx[tids[j]]
+                    w = 0.5
+                    if st.a_artist[b] in st.artist_related.get(ai, ()):
+                        w += 2.0
+                    rows_i.append(a); cols_i.append(b); vals.append(w)
+
+    mat = coo_matrix((np.array(vals, dtype=np.float32), (rows_i, cols_i)), shape=shape).tocsr()
+    mat = mat + identity(n, dtype=np.float32, format='csr') * 0.1
+
+    logger.info("Computing latent graph embeddings via TruncatedSVD...")
+    n_components = min(32, n - 1)
+    target_dim = min(32, max(1, n - 1))
+    if n_components > 2 and mat.nnz > 10:
+        svd = TruncatedSVD(n_components=n_components, random_state=42)
+        st.embeddings = normalize(svd.fit_transform(mat), norm='l2', axis=1)
+    else:
+        st.embeddings = np.zeros((n, target_dim), dtype=np.float32)
 
 
 def build_state(db_path: str, features_db_path: str) -> EngineState:
     st = EngineState()
     st.db_path = db_path
     conn = config.connect_ro(db_path)
-    c = conn.cursor()
     try:
-        # 1. Tracks, ordered so album windows follow the real track order
-        rows = c.execute("""
-            SELECT id, title, artist, album, artist_id, album_id, year, bpm, duration, path
+        c = conn.cursor()
+        # Inspect columns of media_file and available tables
+        mf_cols = {col[1] for col in c.execute("PRAGMA table_info(media_file)").fetchall()}
+        has_genre_col = "genre" in mf_cols
+
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        has_mfg = "media_file_genres" in tables and "genre" in tables
+
+        mfg_map = {}
+        if has_mfg:
+            try:
+                for mfid, gname in c.execute(
+                    "SELECT mfg.media_file_id, g.name FROM media_file_genres mfg JOIN genre g ON mfg.genre_id = g.id"
+                ).fetchall():
+                    if mfid and gname:
+                        if mfid not in mfg_map:
+                            mfg_map[mfid] = gname
+                        else:
+                            mfg_map[mfid] += f" / {gname}"
+            except Exception as e:
+                logger.warning(f"Warning reading media_file_genres: {e}")
+
+        genre_select = "genre" if has_genre_col else "'' AS genre"
+        query = f"""
+            SELECT id, title, artist, album, artist_id, album_id, year, bpm, duration, path, {genre_select}
             FROM media_file
             ORDER BY album_id, disc_number, track_number, path
-        """).fetchall()
+        """
+        rows = c.execute(query).fetchall()
 
         album_tracks = defaultdict(list)
-        for tid, title, artist, album, artist_id, album_id, year, bpm, duration, path in rows:
+        for tid, title, artist, album, artist_id, album_id, year, bpm, duration, path, raw_genre in rows:
             artist_name = artist or 'Unknown Artist'
+            genre_val = (raw_genre or mfg_map.get(tid) or '').strip()
             st.tracks[tid] = {
                 'id': tid,
                 'title': title or 'Unknown Title',
@@ -340,7 +445,7 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
                 'bpm': bpm or 0.0,
                 'duration': duration or 0.0,
                 'path': path or '',
-                'genre': '',
+                'genre': genre_val,
                 'key_name': '',
                 'camelot': '',
                 'energy': None,
@@ -360,7 +465,7 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
         st.track_ids = list(st.tracks.keys())
         st.id_to_idx = {tid: i for i, tid in enumerate(st.track_ids)}
         n = len(st.track_ids)
-        print(f"[AutoplayEngine] Loaded {n} tracks across {len(st.artist_tracks)} artists.")
+        logger.info(f"Loaded {n} tracks across {len(st.artist_tracks)} artists.")
 
         # Static per-track arrays
         st.artist_names = list(st.artist_tracks.keys())
@@ -418,7 +523,7 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
                     "FROM annotation WHERE item_type='media_file' GROUP BY item_id"):
                 st.annotations[item_id] = {'play_count': pc or 0, 'starred': bool(starred)}
         except Exception as e:
-            print(f"[AutoplayEngine] Warning loading annotations: {e}")
+            logger.warning(f"Warning loading annotations: {e}")
         st.a_starred = np.array([st.annotations.get(tid, {}).get('starred', False) for tid in st.track_ids])
         st.a_playcount = np.array([st.annotations.get(tid, {}).get('play_count', 0) for tid in st.track_ids])
 
@@ -437,10 +542,10 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
                 except Exception:
                     pass
         except Exception as e:
-            print(f"[AutoplayEngine] Warning loading similar artists: {e}")
+            logger.warning(f"Warning loading similar artists: {e}")
 
         # 5. Multi-signal hybrid graph (built as COO triplets, duplicates are summed)
-        print("[AutoplayEngine] Building multi-signal graph matrix...")
+        logger.info("Building multi-signal graph matrix...")
         rows_i, cols_i, vals = [], [], []
         t_rows, t_cols, t_vals = [], [], []
         idx = st.id_to_idx
@@ -461,24 +566,6 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
         # 5b. Same artist continuity
         for tids in st.artist_tracks.values():
             add_window(tids, 10, 0.8)
-        # 5c. Cluster BPM neighbours + token-related artists (only tracks with a known BPM)
-        cluster_tids = defaultdict(list)
-        for tid in st.track_ids:
-            if st.tracks[tid]['bpm'] > 0:
-                cluster_tids[st.tracks[tid]['cluster']].append(tid)
-        for tids in cluster_tids.values():
-            tids.sort(key=lambda x: st.tracks[x]['bpm'])
-            L = len(tids)
-            for i in range(L):
-                a = idx[tids[i]]
-                ai = st.a_artist[a]
-                for j in range(max(0, i - 2), min(L, i + 3)):
-                    if i != j:
-                        b = idx[tids[j]]
-                        w = 0.5
-                        if st.a_artist[b] in st.artist_related.get(ai, ()):
-                            w += 2.0
-                        rows_i.append(a); cols_i.append(b); vals.append(w)
 
         def add_sequence(seq, base_w):
             L = len(seq)
@@ -515,7 +602,7 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
             if len(curr_s) >= 2:  # flush the final session
                 add_sequence(curr_s, 1.0)
         except Exception as e:
-            print(f"[AutoplayEngine] Warning loading scrobbles: {e}")
+            logger.warning(f"Warning loading scrobbles: {e}")
 
         # 5e. Playlists
         try:
@@ -528,23 +615,17 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
                 if len(pts) >= 2:
                     add_sequence(pts, 1.2)
         except Exception as e:
-            print(f"[AutoplayEngine] Warning loading playlists: {e}")
+            logger.warning(f"Warning loading playlists: {e}")
     finally:
         conn.close()
 
-    shape = (n, n)
-    mat = coo_matrix((np.array(vals, dtype=np.float32), (rows_i, cols_i)), shape=shape).tocsr()
-    mat = mat + identity(n, dtype=np.float32, format='csr') * 0.1
-    st.transitions = coo_matrix((np.array(t_vals, dtype=np.float32), (t_rows, t_cols)), shape=shape).tocsr()
+    st.base_rows = rows_i
+    st.base_cols = cols_i
+    st.base_vals = vals
+    st.transitions = coo_matrix((np.array(t_vals, dtype=np.float32), (t_rows, t_cols)), shape=(n, n)).tocsr()
 
-    # 6. SVD latent graph embedding (dense representation across 100% of tracks)
-    print("[AutoplayEngine] Computing latent graph embeddings via TruncatedSVD...")
-    n_components = min(32, n - 1)
-    if n_components > 2 and mat.nnz > 10:
-        svd = TruncatedSVD(n_components=n_components, random_state=42)
-        st.embeddings = normalize(svd.fit_transform(mat), norm='l2', axis=1)
-    else:
-        st.embeddings = np.zeros((n, 16), dtype=np.float32)
+    # 6. SVD latent graph embedding (rebuilt via helper)
+    _rebuild_graph_and_svd(st)
     return st
 
 
@@ -553,19 +634,22 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
 # ---------------------------------------------------------------------------
 
 class AutoplayEngine:
-    def __init__(self, db_path: str = None, features_db_path: str = None):
+    def __init__(self, db_path: str = None, features_db_path: str = None, lazy: bool = False):
         self.db_path = db_path
         self.features_db_path = features_db_path or config.FEATURES_DB_PATH
         self.state = EngineState()
-        self.sessions = {}
+        self.sessions = OrderedDict()
         self._sess_lock = threading.Lock()
         self._reload_lock = threading.Lock()
+
+        if lazy:
+            return
 
         if not self.db_path:
             try:
                 self.db_path = config.resolve_db_path()
             except FileNotFoundError as e:
-                print(f"[AutoplayEngine] Warning: {e}. Waiting for database configuration.")
+                logger.warning(f"Warning: {e}. Waiting for database configuration.")
                 return
 
         self.load_database()
@@ -595,10 +679,10 @@ class AutoplayEngine:
         try:
             if not self.db_path:
                 self.db_path = config.resolve_db_path()
-            print(f"[AutoplayEngine] Loading database from: {self.db_path}")
+            logger.info(f"Loading database from: {self.db_path}")
             new_state = build_state(self.db_path, self.features_db_path)
             self.state = new_state  # atomic reference swap
-            print("[AutoplayEngine] Engine initialization complete and ready.")
+            logger.info("Engine initialization complete and ready.")
             return True
         finally:
             self._reload_lock.release()
@@ -617,10 +701,11 @@ class AutoplayEngine:
             count = _apply_features(st.tracks, self.features_db_path)
             st.features_mtime = mtime
             _compute_feature_arrays(st)
+            _rebuild_graph_and_svd(st)
             self.state = st
             return count
         except Exception as e:
-            print(f"[AutoplayEngine] Error reloading features: {e}")
+            logger.exception(f"Error reloading features: {e}")
             return 0
         finally:
             self._reload_lock.release()
@@ -700,12 +785,13 @@ class AutoplayEngine:
         score[st.a_starred] += 0.35
         score[st.a_playcount >= 5] += 0.20
 
-        # g. Genre match
+        # g. Genre match (token / delimiter matching)
         cg = st.a_genre[curr_idx]
-        if cg >= 0:
-            g0 = st.genres[cg]
-            gmatch = np.array([g0 == g or g0 in g or g in g0 for g in st.genres] + [False])
-            score[gmatch[st.a_genre]] += 0.40  # index -1 hits the trailing False
+        if cg >= 0 and len(st.genre_tokens) > cg:
+            g0_tokens = st.genre_tokens[cg]
+            if g0_tokens:
+                gmatch = np.array([bool(g0_tokens & gt) for gt in st.genre_tokens] + [False])
+                score[gmatch[st.a_genre]] += 0.40  # index -1 hits the trailing False
 
         # h. Harmonic mixing (Camelot wheel)
         cn = st.a_cam_num[curr_idx]
@@ -741,21 +827,42 @@ class AutoplayEngine:
 
     # -- sessions --
     def _session_snapshot(self, st: EngineState, session_id, item_id):
-        key = session_id or item_id
+        is_explicit = bool(session_id)
+        key = session_id if is_explicit else item_id
         artist = st.tracks[item_id]['artist']
         now = time.time()
         with self._sess_lock:
-            for k in [k for k, v in self.sessions.items() if (now - v.last_activity) > config.SESSION_TTL_SECONDS]:
+            # 1. TTL eviction
+            expired = [k for k, v in self.sessions.items() if (now - v.last_activity) > config.SESSION_TTL_SECONDS]
+            for k in expired:
                 del self.sessions[k]
+
             sess = self.sessions.get(key)
-            # A track we never played or recommended in this session means the user started a new mix.
-            if sess is None or (item_id not in sess.history and item_id not in sess.recent_recs):
+            if sess is None:
                 sess = SessionContext(item_id, artist)
                 self.sessions[key] = sess
-            elif sess.history[-1] != item_id:
-                sess.update(item_id, artist)
+            elif is_explicit:
+                # With an explicit session_id, preserve seed_id and history even if user manually enqueued track
+                if sess.history[-1] != item_id:
+                    sess.update(item_id, artist)
+                else:
+                    sess.last_activity = now
             else:
-                sess.last_activity = now
+                # Implicit session keyed by item_id: reset if item_id somehow diverged, otherwise touch timestamp
+                if item_id not in sess.history and item_id not in sess.recent_recs:
+                    sess = SessionContext(item_id, artist)
+                    self.sessions[key] = sess
+                elif sess.history[-1] != item_id:
+                    sess.update(item_id, artist)
+                else:
+                    sess.last_activity = now
+
+            self.sessions.move_to_end(key)
+
+            # 2. Cap cache capacity (LRU)
+            while len(self.sessions) > config.MAX_SESSIONS:
+                self.sessions.popitem(last=False)
+
             return sess, sess.seed_id, set(sess.history[-8:]), (sess.artist_history[-1] if sess.artist_history else "")
 
     def get_similar_tracks(
@@ -777,7 +884,7 @@ class AutoplayEngine:
         8. Primary Artist Fatigue & Cross-Compilation Deduplication
         """
         st = self.state  # one consistent snapshot for the whole request
-        if item_id not in st.id_to_idx or n <= 0:
+        if item_id not in st.id_to_idx or n <= 0 or len(st.track_ids) <= 1:
             return []
         n = min(n, config.MAX_RESULTS)
 
@@ -871,6 +978,15 @@ class AutoplayEngine:
         st = self.state
         if start_song_id not in st.id_to_idx or end_song_id not in st.id_to_idx:
             return {"path": []}
+
+        if start_song_id == end_song_id:
+            t = st.tracks[start_song_id]
+            return {"path": [{"item_id": t['id'], "title": t['title'], "author": t['artist'],
+                              "album": t['album'], "distance": 0.0}]}
+
+        if len(st.track_ids) <= 1:
+            return {"path": []}
+
         max_steps = max(2, min(max_steps, config.MAX_PATH_STEPS))
 
         emb = st.embeddings
@@ -882,7 +998,12 @@ class AutoplayEngine:
 
         while curr != end_idx and len(path) < max_steps - 1:
             scores = self._score(st, curr, start_idx)
-            top = np.argpartition(-scores, min(12, len(scores) - 1))[:12]
+            if len(scores) <= 1:
+                break
+            k = min(12, len(scores) - 1)
+            if k <= 0:
+                break
+            top = np.argpartition(-scores, k)[:k]
             if end_idx in top:
                 break
             best, best_val = None, -np.inf

@@ -85,9 +85,12 @@ navidrome-autoplay/
 ├── config.py                  # Settings, weights, and ports
 ├── engine.py                  # Similarity map, session tracking, transition scoring
 ├── analyzer.py                # Multi-core BPM, key, and genre extraction
-├── server.py                  # Flask API compatible with the AudioMuse-AI Navidrome plugin
+├── server.py                  # Flask/Gunicorn API compatible with the AudioMuse-AI Navidrome plugin
+├── install.sh                 # Automated installer (.venv + hardened systemd service)
 ├── service.sh                 # Helper script (start, stop, restart, status)
-└── navidrome-autoplay.service # systemd unit file
+├── navidrome-autoplay.service # Hardened systemd unit file
+├── test_autoplay.py           # Unit tests for engine and analyzer
+└── test_server.py             # Integration tests for HTTP API endpoints
 ```
 
 `features.db` (the extracted audio features) is created locally at runtime and isn't part of the repository.
