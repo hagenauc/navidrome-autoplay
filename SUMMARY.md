@@ -102,7 +102,7 @@ For candidate track $c$ and session history $H = [t_1, t_2, \dots, t_k]$, where 
 
 $$\text{Score}(c) = w_{\text{local}} S_{\text{svd}}(c, t_k) + w_{\text{macro}} S_{\text{svd}}(c, t_1) + w_{\text{art}} S_{\text{artist}}(c, t_k) + \text{Affinity}(c) + S_{\text{genre}}(c) + S_{\text{camelot}}(c) - P_{\text{fatigue}}(c, H) - P_{\text{bpm}}(c, t_k) - P_{\text{energy}}(c, t_k)$$
 
-with default weights $w_{\text{local}} = 0.45$, $w_{\text{macro}} = 0.30$, and $w_{\text{art}} = 0.25$.
+with default weights $w_{\text{local}} = 0.40$, $w_{\text{macro}} = 0.40$, and $w_{\text{art}} = 0.25$.
 
 * **Similarity map:** Built from listening sessions, artist-to-artist transitions, albums, and artists in my library (on my server, about 600 sessions and 4,000+ artist transition pairs). `TruncatedSVD` turns this into a 32-dimensional vector for every track, so songs with no play history can still be recommended.
 * **Two reference points:** Each candidate is compared to the starting song and the current song, which keeps the mix from drifting.
@@ -115,7 +115,7 @@ with default weights $w_{\text{local}} = 0.45$, $w_{\text{macro}} = 0.30$, and $
   * Three or more steps apart: $-0.25$
 * **Variety (Gumbel-Top-$k$ sampling):**
   * Without this, the same starting song always produced exactly the same mix.
-  * A small amount of random noise ($\tau = 0.20$) is added only to candidates above a minimum score.
+  * A small amount of random noise ($\tau = 0.10$) is added only to candidates above a minimum score.
   * Strong matches still tend to come first, but each mix is a little different. Poor matches stay below the cutoff.
 * **Repetition and duplicates:**
   * At most 2 songs per artist in a queue by default.

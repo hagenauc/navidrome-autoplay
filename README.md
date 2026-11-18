@@ -75,10 +75,10 @@ For candidate track $c$ and session history $H = [t_1, t_2, \dots, t_k]$, where 
 
 $$\text{Score}(c) = w_{\text{local}} S_{\text{svd}}(c, t_k) + w_{\text{macro}} S_{\text{svd}}(c, t_1) + w_{\text{art}} S_{\text{artist}}(c, t_k) + \text{Affinity}(c) - \text{Penalties}$$
 
-with default weights $0.45$, $0.30$, and $0.25$. The starting song ($t_1$) keeps the overall mood, and the current song ($t_k$) keeps the next transition smooth.
+with default weights $0.40$, $0.40$, and $0.25$. The starting song ($t_1$) keeps the overall mood, and the current song ($t_k$) keeps the next transition smooth.
 
 #### 3. Variety (Gumbel-Top-$k$ sampling)
-A small amount of Gumbel noise ($\tau = 0.20$) is added only to candidates above a minimum score:
+A small amount of Gumbel noise ($\tau = 0.10$) is added only to candidates above a minimum score:
 
 $$S'_c = S_c + \tau \cdot g_c, \quad g_c = -\ln(-\ln(U_c)), \; U_c \sim \text{Uniform}(0, 1)$$
 
@@ -167,9 +167,9 @@ These settings can be changed with environment variables:
 | `AUTOPLAY_HOST` | `127.0.0.1` | Bind address. Since there is no Web UI, `127.0.0.1` (localhost) is sufficient whenever Navidrome runs on the same machine. Only set `0.0.0.0` if Navidrome runs in an isolated container/host. |
 | `AUTOPLAY_PORT` | `8001` | Main HTTP port (the service also listens on 8000) |
 | `NAVIDROME_DB` | `/var/lib/navidrome/navidrome.db` | Path to Navidrome's SQLite database |
-| `MACRO_ANCHOR_WEIGHT` | `0.30` | How strongly the mix stays close to the starting song |
-| `LOCAL_TRANSITION_WEIGHT` | `0.45` | How strongly the next song follows the current one |
-| `AUTOPLAY_TEMPERATURE` | `0.20` | Amount of variety (0.0 = the same mix every time) |
+| `MACRO_ANCHOR_WEIGHT` | `0.40` | How strongly the mix stays close to the starting song |
+| `LOCAL_TRANSITION_WEIGHT` | `0.40` | How strongly the next song follows the current one |
+| `AUTOPLAY_TEMPERATURE` | `0.10` | Amount of variety (0.0 = the same mix every time) |
 | `MAX_ARTIST_REPEAT_IN_QUEUE` | `2` | Maximum songs per artist in a queue |
 | `BPM_TOLERANCE_PCT` | `0.10` | Tempo difference allowed before a penalty applies (10%) |
 | `SESSION_TTL_SECONDS` | `7200` | In-memory session expiration time in seconds |

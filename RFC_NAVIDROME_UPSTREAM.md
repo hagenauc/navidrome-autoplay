@@ -62,10 +62,10 @@ For candidate track $c$ and session history $H = [t_1, t_2, \dots, t_k]$, where 
 
 $$\text{Score}(c) = w_{\text{local}} S_{\text{svd}}(c, t_k) + w_{\text{macro}} S_{\text{svd}}(c, t_1) + w_{\text{art}} S_{\text{artist}}(c, t_k) + \text{Affinity}(c) - \text{Penalties}$$
 
-with default weights $0.45$, $0.30$, and $0.25$. The starting song keeps the overall mood, and the current song keeps the next step smooth.
+with default weights $0.40$, $0.40$, and $0.25$. The starting song keeps the overall mood, and the current song keeps the next step smooth.
 
 ### C. A little variety (Gumbel-Top-$k$ sampling)
-A small amount of noise ($\tau = 0.20$) is added only to candidates above a minimum score:
+A small amount of noise ($\tau = 0.10$) is added only to candidates above a minimum score:
 
 $$S'_c = S_c + \tau \cdot g_c, \quad g_c = -\ln(-\ln(U_c)), \; U_c \sim \text{Uniform}(0, 1)$$
 
