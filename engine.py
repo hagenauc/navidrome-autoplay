@@ -8,8 +8,7 @@ import logging
 from collections import defaultdict, Counter, OrderedDict
 import numpy as np
 from scipy.sparse import coo_matrix, identity
-from sklearn.decomposition import TruncatedSVD
-from sklearn.preprocessing import normalize
+from scipy.sparse.linalg import svds
 import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
@@ -289,9 +288,7 @@ class EngineState:
         self.genres = []
         self.prim_artist = []
         self.clean_keys = []
-        self.base_rows = []
-        self.base_cols = []
-        self.base_vals = []
+        self.base_graph = None          # csr (n, n) base graph without 5c BPM neighbours
         self.genre_tokens = []
 
 
@@ -406,9 +403,7 @@ def _rebuild_graph_and_svd(st: EngineState):
         return
 
     idx = st.id_to_idx
-    rows_i = list(st.base_rows)
-    cols_i = list(st.base_cols)
-    vals = list(st.base_vals)
+    rows_i, cols_i, vals = [], [], []
 
     # 5c. Cluster BPM neighbours + token-related artists (only tracks with a known BPM)
     # Connect BPM neighbours only when they also share a genre token or era (<= 10y) or are token-related,
@@ -442,15 +437,19 @@ def _rebuild_graph_and_svd(st: EngineState):
                         w += 2.0
                     rows_i.append(a); cols_i.append(b); vals.append(w)
 
-    mat = coo_matrix((np.array(vals, dtype=np.float32), (rows_i, cols_i)), shape=shape).tocsr()
+    bpm_mat = coo_matrix((np.array(vals, dtype=np.float32), (rows_i, cols_i)), shape=shape).tocsr()
+    mat = (st.base_graph + bpm_mat if st.base_graph is not None else bpm_mat)
     mat = mat + identity(n, dtype=np.float32, format='csr') * 0.1
 
-    logger.info("Computing latent graph embeddings via TruncatedSVD...")
-    n_components = min(32, n - 1)
+    logger.info("Computing latent graph embeddings via SVD...")
+    n_components = min(32, n - 2)
     target_dim = min(32, max(1, n - 1))
-    if n_components > 2 and mat.nnz > 10:
-        svd = TruncatedSVD(n_components=n_components, random_state=42)
-        st.embeddings = normalize(svd.fit_transform(mat), norm='l2', axis=1)
+    if n_components > 1 and mat.nnz > 10:
+        u, s, _ = svds(mat, k=n_components, rng=42)
+        emb = (u[:, ::-1] * s[::-1]).astype(np.float32)
+        norms = np.linalg.norm(emb, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        st.embeddings = emb / norms
     else:
         st.embeddings = np.zeros((n, target_dim), dtype=np.float32)
 
@@ -698,9 +697,7 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
     finally:
         conn.close()
 
-    st.base_rows = rows_i
-    st.base_cols = cols_i
-    st.base_vals = vals
+    st.base_graph = coo_matrix((np.array(vals, dtype=np.float32), (rows_i, cols_i)), shape=(n, n)).tocsr()
     st.transitions = coo_matrix((np.array(t_vals, dtype=np.float32), (t_rows, t_cols)), shape=(n, n)).tocsr()
 
     # 6. SVD latent graph embedding (rebuilt via helper)
