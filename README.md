@@ -98,8 +98,8 @@ Strong matches still tend to come first, but the order and selection change from
 
 These are informal numbers from my own server (a library of about 6,400 tracks). Your results will probably differ depending on hardware and library size.
 
-* Memory use is around 110 MB.
-* A 100-song mix usually comes back in about 30 ms.
+* Memory use is around 94 MB (total across the Gunicorn master and worker).
+* A 100-song mix usually comes back in about 4 ms.
 * The included analyzer processed roughly 12–15 tracks per second on 6 CPU cores, so my whole library took about 7 minutes.
 
 ---

@@ -20,7 +20,7 @@ While using it, I noticed a few things that mattered for my library:
 
 The approach borrows a few ideas from public descriptions of how Spotify and Apple Music handle autoplay: comparing to both the starting and the current song, mixing in a little randomness, and preferring compatible tempos and keys.
 
-**What I saw on my own setup (about 6,400 tracks):** around 110 MB of memory, roughly 30 ms per 100-song mix, and about 7 minutes to analyze the whole library on 6 CPU cores. These are informal observations from one machine, not careful benchmarks.
+**What I saw on my own setup (about 6,400 tracks):** around 94 MB of memory, roughly 4 ms per 100-song mix, and about 7 minutes to analyze the whole library on 6 CPU cores. These are informal observations from one machine, not careful benchmarks.
 
 ---
 

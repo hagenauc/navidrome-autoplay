@@ -76,7 +76,7 @@ These are things I noticed with my own library and listening habits. Other setup
 
 ## 4. What was built
 
-It's written in Python using `numpy`, `scipy`, `scikit-learn`, `aubio`, and `mutagen`.
+It's written in Python using `numpy`, `scipy`, `aubio`, and `mutagen`.
 
 ### Files
 
