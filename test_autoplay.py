@@ -476,3 +476,60 @@ def test_energy_normalization_single_and_05(tmp_path):
 
     # Must retain 0.5000 energy and assign 0.5 library percentile for single track
     assert tracks['t_exact_05']['energy'] == 0.5
+
+
+def test_macro_cluster_blasmusik_and_specialty_genres():
+    assert get_macro_cluster({"artist": "Werkskapelle Der Siemens Transportation System GmbH", "genre": "Country & Folk"}) == "volksmusik_schlager"
+    assert get_macro_cluster({"artist": "Blasorchester Georg Ried", "genre": "Country & Folk"}) == "volksmusik_schlager"
+    assert get_macro_cluster({"artist": "S.T.S.", "title": "Großvater", "genre": "<Unbekannt>"}) == "volksmusik_schlager"
+    assert get_macro_cluster({"artist": "Udo Jürgens", "title": "Griechischer Wein", "genre": "Rock"}) == "volksmusik_schlager"
+    assert get_macro_cluster({"artist": "Oimara", "title": "Wackelkontakt", "genre": "Dance & DJ"}) == "volksmusik_schlager"
+    assert get_macro_cluster({"artist": "Tom Walek", "genre": "Spoken & Audio"}) == "spoken"
+    assert get_macro_cluster({"artist": "John Denver", "title": "Christmas For Cowboys", "genre": ""}) == "holiday"
+    assert get_macro_cluster({"artist": "Various", "genre": "Children's"}) == "children"
+
+
+def test_artist_token_similarity_stops_common_surnames():
+    assert artist_name_token_similarity("Thelma Houston", "Whitney Houston") == 0.0
+    assert artist_name_token_similarity("Alan Jackson", "Michael Jackson") == 0.0
+    assert artist_name_token_similarity("Robbie Williams", "John Williams") == 0.0
+
+
+def test_scrobble_cross_cluster_poisoning_prevented(tmp_path):
+    nav_db = tmp_path / "nav_poison.db"
+    feat_db = tmp_path / "feat_poison.db"
+
+    conn = sqlite3.connect(str(nav_db))
+    conn.execute("""
+        CREATE TABLE media_file (
+            id TEXT PRIMARY KEY, title TEXT, artist TEXT, album TEXT,
+            artist_id TEXT, album_id TEXT, disc_number INTEGER, track_number INTEGER,
+            year INTEGER, bpm REAL, duration REAL, path TEXT, genre TEXT
+        )
+    """)
+    conn.execute("CREATE TABLE annotation (item_id TEXT, item_type TEXT, play_count INTEGER, starred INTEGER)")
+    conn.execute("CREATE TABLE artist (name TEXT, similar_artists TEXT)")
+    conn.execute("CREATE TABLE scrobbles (user_id TEXT, media_file_id TEXT, submission_time INTEGER)")
+    conn.execute("CREATE TABLE playlist_tracks (playlist_id TEXT, media_file_id TEXT, id INTEGER)")
+
+    conn.execute("INSERT INTO media_file VALUES ('p1', 'Shape of You', 'Ed Sheeran', 'Divide', 'a1', 'al1', 1, 1, 2017, 97, 230, '/m/p1.mp3', 'Pop')")
+    conn.execute("INSERT INTO media_file VALUES ('p2', 'Starving', 'Hailee Steinfeld', 'Haiz', 'a2', 'al2', 1, 1, 2016, 101, 180, '/m/p2.mp3', 'Pop')")
+    conn.execute("INSERT INTO media_file VALUES ('v1', 'Almrosen Walzer', 'Werkskapelle', 'Gute Fahrt', 'a3', 'al3', 1, 1, 2005, 96, 180, '/m/v1.mp3', 'Country & Folk')")
+
+    # Simulate a drifted scrobble from Pop -> Volksmusik within 1500s
+    conn.execute("INSERT INTO scrobbles VALUES ('u1', 'p1', 1000)")
+    conn.execute("INSERT INTO scrobbles VALUES ('u1', 'v1', 1200)")
+    conn.commit()
+    conn.close()
+
+    fconn = sqlite3.connect(str(feat_db))
+    fconn.execute("CREATE TABLE track_features (item_id TEXT PRIMARY KEY, bpm REAL, key_name TEXT, camelot TEXT, genre TEXT, energy REAL, updated_at REAL, status TEXT)")
+    fconn.commit()
+    fconn.close()
+
+    eng = AutoplayEngine(db_path=str(nav_db), features_db_path=str(feat_db))
+    # Cross-cluster scrobble must NOT create artist_cooccur or transition edge
+    assert "Werkskapelle" not in eng.artist_cooccur.get("Ed Sheeran", {})
+    p1_idx = eng.state.id_to_idx["p1"]
+    v1_idx = eng.state.id_to_idx["v1"]
+    assert eng.state.transitions[p1_idx, v1_idx] == 0.0

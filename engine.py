@@ -50,20 +50,38 @@ AUSTRO_GERMAN_ARTISTS = {
     'die jungen zillertaler', 'zillertaler schürzenjäger', 'original zilllertaler',
     'andreas gabalier', 'dj ötzi', 'dj ötzi & nik p.', 'helene fischer', 'edmund',
     'seiler und speer', 'seiler und speer feat. anton horvath', 'pizzera & jaus',
-    'erste allgemeine verunsicherung', 'rainhard fendrich', 'wolfgang ambros',
-    'wolfgang ambros & andré heller', 'ambros/tauchen/prokopetz', 'sts',
-    'hubert von goisern', 'georg danzer', 'die seer', 'die steirische landstreich',
-    'die landstreich', 'die doofen',
+    'erste allgemeine verunsicherung', 'eav', 'rainhard fendrich', 'reinhard fendrich',
+    'wolfgang ambros', 'wolfgang ambros & andré heller', 'ambros/tauchen/prokopetz',
+    'sts', 's.t.s.', 'hubert von goisern', 'georg danzer', 'die seer',
+    'die steirische landstreich', 'die landstreich', 'die doofen',
     'ostbahn kurti & die chefpartie', 'kurt pascher und seine böhmerwälder musikanten',
     'karl hanspeter & seine original südtirol musikanten', 'original tiroler kaiserjägermusik',
     'militärmusik kärnten', 'die 3 tenöre', 'das modul', 'mickie krause', 'peter alexander', 'falco',
     'ludwig hirsch', 'steinbäcker', 'schiffkowitz', 'timischl', 'klostertaler',
-    'kastelruther spatzen', 'schürzenjäger', 'die sonnwendler', 'zillertaler heimatbuben', 'austria 3'
+    'kastelruther spatzen', 'schürzenjäger', 'die sonnwendler', 'zillertaler heimatbuben', 'austria 3',
+    'udo jürgens', 'oimara', 'rudolf klein', 'georg ried', 'blasorchester georg ried',
+    'roland kaiser', 'andrea berg', 'semino rossi', 'hansi hinterseer', 'nockalm quintett',
+    'nockis', 'paldauer', 'die drahtzieher', 'die mayrhofner', 'die ladiner', 'die edlseer',
+    'marc pircher', 'melissa naschenweng', 'wanda', 'bilderbuch', 'folkshilfe', 'ina regen',
+    'christina stürmer', 'julian le play', 'peter cornelius', 'marianne mendt', 'stefanie werger',
+    'boris bukowski', 'minisex', 'drahdiwaberl', 'attwenger', 'josh.', 'rucki zucki palmencombo',
 }
 
 _AUSTRO_RE = re.compile(
     r'\b(?:zillert\w*|österreich\w*|austria|steirisch\w*|tirol\w*|schürzenjäger|'
-    r'gabalier|fendrich|ambros|ötzi|spatzen|volksmusik\w*)\b'
+    r'gabalier|fendrich|ambros|ötzi|spatzen|volksmusik\w*|werkskapelle\w*|'
+    r'blasorchester\w*|trachtenkapelle\w*|musikkapelle\w*|blaskapelle\w*|'
+    r'dorfmusikanten\w*|musikanten\w*|stadtkapelle\w*|feuerwehrmusik\w*|'
+    r'schützenmusik\w*|bergkapelle\w*|knappenkapelle\w*|oberkrainer|krainer)\b'
+)
+
+_AUSTRO_TITLE_ALBUM_RE = re.compile(
+    r'\b(?:marschmusik\w*|blasmusik\w*|almrosen|zillertal\w*|musikparade|'
+    r'schlagerparade|volksmusik\w*|walzer|polka)\b'
+)
+
+_HOLIDAY_RE = re.compile(
+    r'\b(?:christmas|xmas|weihnacht\w*|rudolph the red|jingle bells|stille nacht|silent night)\b'
 )
 
 # Only unambiguous classical markers. Plain 'orchestra' / 'symphon' / 'bach' substrings
@@ -76,8 +94,12 @@ _CLASSICAL_ARTIST_RE = re.compile(
 
 _GENRE_TO_CLUSTER = {}
 for _c, _gs in {
-    'classical': ['classical', 'baroque', 'opera', 'orchestral', 'klassik'],
-    'volksmusik_schlager': ['volksmusik', 'german folk', 'german pop', 'schlager', 'austropop'],
+    'classical': ['classical', 'baroque', 'opera', 'orchestral', 'klassik', 'chamber music', 'symphony'],
+    'volksmusik_schlager': ['volksmusik', 'german folk', 'german pop', 'schlager', 'austropop',
+                            'blasmusik', 'marschmusik', 'alpenländisch', 'oberkrainer'],
+    'spoken': ['spoken & audio', 'spoken', 'audiobook', 'podcast', 'comedy', 'dialogue'],
+    'holiday': ['holiday', 'christmas', 'weihnachten', 'xmas'],
+    'children': ["children's", 'children', 'kids', 'kinder', 'kinderlieder'],
     'hiphop': ['hip-hop', 'hip hop', 'hip-hop/rap', 'rap & hip-hop', 'rap', 'trap'],
     'electronic': ['dance', 'dance & house', 'dance & dj', 'club', 'trance', 'electronica', 'edm',
                    'electronic', 'house', 'techno'],
@@ -101,23 +123,34 @@ def _genre_cluster(g: str):
 def get_macro_cluster(track: dict) -> str:
     """Classify track into macro cultural and musical clusters."""
     art = (track.get('artist') or '').lower().strip()
+    title = (track.get('title') or '').lower().strip()
+    album = (track.get('album') or '').lower().strip()
     g = (track.get('genre') or '').lower().strip()
     g_cluster = _genre_cluster(g)
 
-    # 1. Classical by genre tag
-    if g_cluster == 'classical':
-        return 'classical'
+    # 1. Classical & non-music specialty clusters by genre tag
+    if g_cluster in ('classical', 'spoken', 'holiday', 'children'):
+        return g_cluster
 
-    # 2. Austro-German / Volksmusik / Schlager / Austropop (artist list wins over generic tags)
+    # 2. Austro-German / Volksmusik / Schlager / Blasmusik / Austropop (artist & markers win over generic tags)
     art_norm = re.sub(r'(.)\1+', r'\1\1', art)
-    if art in AUSTRO_GERMAN_ARTISTS or _AUSTRO_RE.search(art_norm):
+    if (
+        art in AUSTRO_GERMAN_ARTISTS
+        or get_primary_artist(art) in AUSTRO_GERMAN_ARTISTS
+        or _AUSTRO_RE.search(art_norm)
+        or (g_cluster in (None, 'country', 'pop', 'rock') and _AUSTRO_TITLE_ALBUM_RE.search(f"{art} {album} {title}"))
+    ):
         return 'volksmusik_schlager'
 
-    # 3. Any other known genre tag
+    # 3. Unambiguous holiday/Christmas tracks when not explicitly tagged otherwise
+    if g_cluster in (None, 'country', 'pop') and _HOLIDAY_RE.search(f"{title} {album}"):
+        return 'holiday'
+
+    # 4. Any other known genre tag
     if g_cluster:
         return g_cluster
 
-    # 4. No usable genre: fall back to unambiguous classical artist markers
+    # 5. No usable genre: fall back to unambiguous classical artist markers
     if _CLASSICAL_ARTIST_RE.search(art):
         return 'classical'
 
@@ -138,6 +171,19 @@ _TOKEN_STOPWORDS = {
     'thomas', 'mark', 'chris', 'frank', 'tony', 'andreas', 'wolfgang', 'hans', 'karl', 'kurt',
     'georg', 'ludwig', 'helene', 'mickie', 'steve', 'billy', 'bill', 'jack', 'mike', 'dave',
     'marc', 'marco', 'anna', 'maria', 'christian', 'stefan', 'martin', 'alexander', 'daniel',
+    # common surnames ("Thelma Houston" is not related to "Whitney Houston")
+    'houston', 'jackson', 'williams', 'smith', 'brown', 'jones', 'miller', 'davis', 'wilson',
+    'taylor', 'clark', 'lewis', 'walker', 'hall', 'allen', 'baker', 'scott', 'green', 'adams',
+    'wright', 'kelly', 'morgan', 'cooper', 'bailey', 'reed', 'howard', 'ward', 'wood', 'watson',
+    'brooks', 'bennett', 'gray', 'price', 'ross', 'russell', 'perry', 'butler', 'fisher',
+    'klein', 'schmidt', 'schneider', 'fischer', 'weber', 'meyer', 'wagner', 'becker', 'schulz',
+    'hoffmann', 'schäfer', 'koch', 'bauer', 'richter', 'wolf', 'schröder', 'neumann', 'schwarz',
+    'zimmermann', 'braun', 'krüger', 'hofmann', 'hartmann', 'lange', 'schmitt', 'werner',
+    'schmitz', 'krause', 'meier', 'lehmann', 'schmid', 'schulze', 'maier', 'köhler', 'herrmann',
+    'könig', 'walter', 'mayer', 'huber', 'kaiser', 'fuchs', 'peters', 'lang', 'scholz', 'möller',
+    'jung', 'hahn', 'schubert', 'vogel', 'friedrich', 'keller', 'günther', 'berger', 'winkler',
+    'roth', 'beck', 'lorenz', 'baumann', 'franke', 'albrecht', 'schuster', 'simon', 'böhm',
+    'winter', 'kraus', 'schumacher',
 }
 
 
@@ -173,7 +219,8 @@ def parse_camelot(cam: str):
     return int(m.group(1)), (1 if m.group(2) == 'B' else 0)
 
 
-CLUSTERS = ['pop', 'classical', 'volksmusik_schlager', 'hiphop', 'electronic', 'country', 'rock']
+CLUSTERS = ['pop', 'classical', 'volksmusik_schlager', 'hiphop', 'electronic', 'country', 'rock',
+            'spoken', 'holiday', 'children']
 _C = {name: i for i, name in enumerate(CLUSTERS)}
 
 
@@ -364,6 +411,8 @@ def _rebuild_graph_and_svd(st: EngineState):
     vals = list(st.base_vals)
 
     # 5c. Cluster BPM neighbours + token-related artists (only tracks with a known BPM)
+    # Connect BPM neighbours only when they also share a genre token or era (<= 10y) or are token-related,
+    # so huge clusters like 'pop' don't chain 1970s disco directly to 2020s pop in SVD space.
     cluster_tids = defaultdict(list)
     for tid in st.track_ids:
         if st.tracks[tid]['bpm'] > 0:
@@ -374,11 +423,22 @@ def _rebuild_graph_and_svd(st: EngineState):
         for i in range(L):
             a = idx[tids[i]]
             ai = st.a_artist[a]
+            ga = st.a_genre[a]
+            ya = st.a_year[a]
+            toks_a = st.genre_tokens[ga] if ga >= 0 and ga < len(st.genre_tokens) else None
+            rel_a = st.artist_related.get(ai, ())
             for j in range(max(0, i - 2), min(L, i + 3)):
                 if i != j:
                     b = idx[tids[j]]
-                    w = 0.5
-                    if st.a_artist[b] in st.artist_related.get(ai, ()):
+                    is_rel = st.a_artist[b] in rel_a
+                    gb = st.a_genre[b]
+                    yb = st.a_year[b]
+                    same_gen = bool(toks_a and gb >= 0 and gb < len(st.genre_tokens) and (toks_a & st.genre_tokens[gb]))
+                    same_era = bool(ya > 0 and yb > 0 and abs(int(ya) - int(yb)) <= 10)
+                    if not (is_rel or same_gen or same_era):
+                        continue
+                    w = 0.15
+                    if is_rel:
                         w += 2.0
                     rows_i.append(a); cols_i.append(b); vals.append(w)
 
@@ -567,24 +627,37 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
         for tids in st.artist_tracks.values():
             add_window(tids, 10, 0.8)
 
-        def add_sequence(seq, base_w):
+        _MAINSTREAM_COMPAT = {_C['pop'], _C['electronic'], _C['rock']}
+
+        def _clusters_compatible(ca: int, cb: int) -> bool:
+            return ca == cb or (ca in _MAINSTREAM_COMPAT and cb in _MAINSTREAM_COMPAT)
+
+        scrobble_art_cooccur = defaultdict(lambda: defaultdict(float))
+
+        def add_sequence(seq, base_w, from_scrobble=False):
             L = len(seq)
             for i in range(L):
                 a = idx[seq[i]]
+                ca = int(st.a_cluster[a])
                 for j in range(max(0, i - 4), min(L, i + 5)):
                     if i != j:
                         b = idx[seq[j]]
+                        if from_scrobble and not _clusters_compatible(ca, int(st.a_cluster[b])):
+                            continue
                         w = base_w / abs(i - j)
                         rows_i.append(a); cols_i.append(b); vals.append(w)
                         t_rows.append(a); t_cols.append(b); t_vals.append(w)
             # artist-level transitions between consecutive tracks
             for x, y in zip(seq, seq[1:]):
+                if from_scrobble and not _clusters_compatible(int(st.a_cluster[idx[x]]), int(st.a_cluster[idx[y]])):
+                    continue
                 ax, ay = st.tracks[x]['artist'], st.tracks[y]['artist']
                 if ax != ay:
-                    st.artist_cooccur[ax][ay] = st.artist_cooccur[ax].get(ay, 0.0) + 1.0
-                    st.artist_cooccur[ay][ax] = st.artist_cooccur[ay].get(ax, 0.0) + 1.0
+                    target = scrobble_art_cooccur if from_scrobble else st.artist_cooccur
+                    target[ax][ay] = target[ax].get(ay, 0.0) + 1.0
+                    target[ay][ax] = target[ay].get(ax, 0.0) + 1.0
 
-        # 5d. Scrobble listening sessions (ground truth)
+        # 5d. Scrobble listening sessions (filtered against cross-cluster / one-off drift poisoning)
         try:
             curr_s, last_u, last_t = [], None, None
             for u, tid, t_sub in c.execute(
@@ -594,15 +667,21 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
                     continue
                 if last_u != u or (last_t is not None and (t_sub - last_t) > 1500):
                     if len(curr_s) >= 2:
-                        add_sequence(curr_s, 1.0)
+                        add_sequence(curr_s, 0.35, from_scrobble=True)
                     curr_s = [tid]
                 else:
                     curr_s.append(tid)
                 last_u, last_t = u, t_sub
             if len(curr_s) >= 2:  # flush the final session
-                add_sequence(curr_s, 1.0)
+                add_sequence(curr_s, 0.35, from_scrobble=True)
         except Exception as e:
             logger.warning(f"Warning loading scrobbles: {e}")
+
+        # Merge only repeated scrobble artist transitions (>= 2) so one-off skips/drifts don't poison the graph
+        for ax, nbrs in scrobble_art_cooccur.items():
+            for ay, cnt in nbrs.items():
+                if cnt >= 2.0:
+                    st.artist_cooccur[ax][ay] = st.artist_cooccur[ax].get(ay, 0.0) + cnt
 
         # 5e. Playlists
         try:
@@ -728,20 +807,35 @@ class AutoplayEngine:
         score = (config.LOCAL_TRANSITION_WEIGHT * (emb @ emb[curr_idx]) +
                  config.MACRO_ANCHOR_WEIGHT * (emb @ emb[macro_idx])).astype(np.float64)
 
-        # a. Cultural & macro-cluster guardrails
-        cc = st.a_cluster[curr_idx]
-        cand = st.a_cluster
-        same = cand == cc
-        score[same] += 0.55
-        rest = ~same
-        m_cls = rest & ((cc == _C['classical']) | (cand == _C['classical']))
-        score[m_cls] -= 2.50
-        rest &= ~m_cls
-        m_vo = rest & ((cc == _C['volksmusik_schlager']) | (cand == _C['volksmusik_schlager']))
-        score[m_vo] -= 1.60
-        rest &= ~m_vo
-        if cc == _C['rock']:
-            score[rest & (cand == _C['electronic'])] -= 0.50
+        # a. Cultural & macro-cluster guardrails (applied to both curr_idx and macro_idx)
+        def _apply_cluster_guardrail(ref_cluster: int, scale: float = 1.0):
+            cand = st.a_cluster
+            same = cand == ref_cluster
+            score[same] += 0.55 * scale
+            rest = ~same
+            for cl_name, pen in (('spoken', 3.00), ('holiday', 3.00), ('children', 3.00),
+                                 ('classical', 2.50), ('volksmusik_schlager', 2.00)):
+                m = rest & ((ref_cluster == _C[cl_name]) | (cand == _C[cl_name]))
+                score[m] -= pen * scale
+                rest &= ~m
+            if ref_cluster == _C['country']:
+                score[rest & np.isin(cand, [_C['hiphop'], _C['electronic'], _C['rock']])] -= 1.00 * scale
+                score[rest & (cand == _C['pop'])] -= 0.85 * scale
+            elif ref_cluster in (_C['hiphop'], _C['electronic'], _C['rock']):
+                score[rest & (cand == _C['country'])] -= 1.00 * scale
+            elif ref_cluster == _C['pop']:
+                score[rest & (cand == _C['country'])] -= 0.85 * scale
+            if ref_cluster == _C['rock']:
+                score[rest & (cand == _C['electronic'])] -= 0.50 * scale
+                score[rest & (cand == _C['hiphop'])] -= 0.60 * scale
+            elif ref_cluster == _C['hiphop']:
+                score[rest & (cand == _C['rock'])] -= 0.60 * scale
+
+        cc = int(st.a_cluster[curr_idx])
+        _apply_cluster_guardrail(cc, scale=1.0)
+        if macro_idx != curr_idx:
+            mc = int(st.a_cluster[macro_idx])
+            _apply_cluster_guardrail(mc, scale=0.60)
 
         # b. Direct transitions (scrobbles / playlists)
         row = st.transitions.getrow(curr_idx)
@@ -774,7 +868,9 @@ class AutoplayEngine:
         cy = st.a_year[curr_idx]
         if cy > 0:
             d = np.abs(st.a_year - cy)
-            score += np.where((st.a_year > 0) & (d <= 6), 0.35 * (1.0 - d / 6.0), 0.0)
+            known_y = st.a_year > 0
+            score += np.where(known_y & (d <= 6), 0.35 * (1.0 - d / 6.0), 0.0)
+            score -= np.where(known_y & (d > 15), 0.35 * np.minimum(1.0, (d - 15) / 25.0), 0.0)
 
         # e. Folder affinity
         cf = st.a_folder[curr_idx]
@@ -898,7 +994,7 @@ class AutoplayEngine:
         if config.RANDOMIZATION_TEMPERATURE > 0:
             finite = np.isfinite(scores)
             max_score = scores[finite].max() if finite.any() else 0.0
-            min_viable = max(0.15, max_score * 0.45)
+            min_viable = max(0.25, max_score * 0.65)
             viable = finite & (scores >= min_viable)
             u = np.random.uniform(1e-10, 1.0 - 1e-10, size=len(scores))
             ranked_scores = scores + np.where(viable, config.RANDOMIZATION_TEMPERATURE * -np.log(-np.log(u)), 0.0)
