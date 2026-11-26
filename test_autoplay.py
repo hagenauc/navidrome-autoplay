@@ -227,10 +227,12 @@ def test_analyzer_acquire_single_instance_lock(tmp_path, monkeypatch):
 
     lock1 = acquire_single_instance_lock()
     assert lock1 is not None
+    assert lock_file.read_text().strip() == str(os.getpid())
 
-    # Second concurrent attempt must fail
+    # Second concurrent attempt must fail and MUST NOT truncate the active PID in lock_file
     lock2 = acquire_single_instance_lock()
     assert lock2 is None
+    assert lock_file.read_text().strip() == str(os.getpid())
 
     # Releasing the first lock allows acquisition again
     lock1.close()
@@ -317,6 +319,8 @@ def test_session_refine_reset_heuristic(mock_dbs):
         # Seed anchor must NOT be wiped!
         assert sess.seed_id == "t1"
         assert "t3" in sess.history
+        # Explicit sessions must not accumulate unused recent_recs bloat
+        assert sess.recent_recs == []
 
 
 def test_max_artist_repeat_and_deduplication(mock_dbs, monkeypatch):
@@ -481,6 +485,11 @@ def test_energy_normalization_single_and_05(tmp_path):
 def test_macro_cluster_blasmusik_and_specialty_genres():
     assert get_macro_cluster({"artist": "Werkskapelle Der Siemens Transportation System GmbH", "genre": "Country & Folk"}) == "volksmusik_schlager"
     assert get_macro_cluster({"artist": "Blasorchester Georg Ried", "genre": "Country & Folk"}) == "volksmusik_schlager"
+    assert get_macro_cluster({"artist": "Singkreis Klagenfurt/Seltenheim", "album": "Die 20 Schönsten Kärntner Lieder", "title": "Muass Zu Mein Diandlan Gehn", "genre": "Country & Folk"}) == "volksmusik_schlager"
+    assert get_macro_cluster({"artist": "Zentrales Militärorchester Berlin", "album": "Die Schönsten Märsche", "title": "Yorkscher Marsch", "genre": "Other"}) == "volksmusik_schlager"
+    assert get_macro_cluster({"artist": "Stabsmusikkorps Erfurt", "album": "Die Schönsten Märsche", "title": "Sehrbelliner Reitermarsch", "genre": "Other"}) == "volksmusik_schlager"
+    assert get_macro_cluster({"artist": "Shania Twain", "album": "Come On Over", "title": "Come On Over", "genre": "Country & Folk"}) == "country"
+    assert get_macro_cluster({"artist": "John Denver", "album": "Love again", "title": "I'm Sorry", "genre": "Country & Folk"}) == "country"
     assert get_macro_cluster({"artist": "S.T.S.", "title": "Großvater", "genre": "<Unbekannt>"}) == "volksmusik_schlager"
     assert get_macro_cluster({"artist": "Udo Jürgens", "title": "Griechischer Wein", "genre": "Rock"}) == "volksmusik_schlager"
     assert get_macro_cluster({"artist": "Oimara", "title": "Wackelkontakt", "genre": "Dance & DJ"}) == "volksmusik_schlager"
@@ -533,3 +542,145 @@ def test_scrobble_cross_cluster_poisoning_prevented(tmp_path):
     p1_idx = eng.state.id_to_idx["p1"]
     v1_idx = eng.state.id_to_idx["v1"]
     assert eng.state.transitions[p1_idx, v1_idx] == 0.0
+
+
+def test_connect_ro_strictly_readonly_and_special_chars(tmp_path):
+    # 1. Non-existent path must fail and NEVER create a new file via read-write fallback
+    missing_db = tmp_path / "does_not_exist.db"
+    with pytest.raises(sqlite3.OperationalError):
+        config.connect_ro(str(missing_db))
+    assert not missing_db.exists()
+
+    # 2. Path containing URI special characters ('?' and '#') must open strictly read-only
+    special_dir = tmp_path / "dir#1?test"
+    special_dir.mkdir()
+    special_db = special_dir / "nav.db"
+    rw_conn = sqlite3.connect(str(special_db))
+    rw_conn.execute("CREATE TABLE t (x INT)")
+    rw_conn.commit()
+    rw_conn.close()
+
+    ro_conn = config.connect_ro(str(special_db))
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            ro_conn.execute("INSERT INTO t VALUES (1)")
+    finally:
+        ro_conn.close()
+
+
+def test_engine_empty_features_db_path_respected(mock_dbs):
+    nav_db, _ = mock_dbs
+    eng = AutoplayEngine(db_path=nav_db, features_db_path="")
+    assert eng.features_db_path == ""
+
+
+def test_public_playlists_only_filtering(tmp_path, monkeypatch):
+    nav_db = tmp_path / "nav_pl.db"
+    conn = sqlite3.connect(str(nav_db))
+    conn.execute("""
+        CREATE TABLE media_file (
+            id TEXT PRIMARY KEY, title TEXT, artist TEXT, album TEXT,
+            artist_id TEXT, album_id TEXT, disc_number INTEGER, track_number INTEGER,
+            year INTEGER, bpm REAL, duration REAL, path TEXT, genre TEXT
+        )
+    """)
+    conn.execute("CREATE TABLE playlist (id TEXT PRIMARY KEY, name TEXT, public INTEGER)")
+    conn.execute("CREATE TABLE playlist_tracks (id INTEGER PRIMARY KEY, playlist_id TEXT, media_file_id TEXT)")
+    conn.execute("INSERT INTO media_file VALUES ('t1', 'Song 1', 'Art 1', 'Alb 1', 'a1', 'al1', 1, 1, 2020, 120, 200, '1.mp3', 'Pop')")
+    conn.execute("INSERT INTO media_file VALUES ('t2', 'Song 2', 'Art 2', 'Alb 2', 'a2', 'al2', 1, 1, 2020, 120, 200, '2.mp3', 'Pop')")
+    conn.execute("INSERT INTO media_file VALUES ('t3', 'Song 3', 'Art 3', 'Alb 3', 'a3', 'al3', 1, 1, 2020, 120, 200, '3.mp3', 'Pop')")
+
+    # Private playlist connects t1 -> t2; public playlist connects t1 -> t3
+    conn.execute("INSERT INTO playlist VALUES ('pl_priv', 'Secret Mix', 0)")
+    conn.execute("INSERT INTO playlist VALUES ('pl_pub', 'Public Mix', 1)")
+    conn.execute("INSERT INTO playlist_tracks VALUES (1, 'pl_priv', 't1')")
+    conn.execute("INSERT INTO playlist_tracks VALUES (2, 'pl_priv', 't2')")
+    conn.execute("INSERT INTO playlist_tracks VALUES (3, 'pl_pub', 't1')")
+    conn.execute("INSERT INTO playlist_tracks VALUES (4, 'pl_pub', 't3')")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr("config.PUBLIC_PLAYLISTS_ONLY", True, raising=False)
+    eng = AutoplayEngine(db_path=str(nav_db), features_db_path="")
+    idx1 = eng.state.id_to_idx["t1"]
+    idx2 = eng.state.id_to_idx["t2"]
+    idx3 = eng.state.id_to_idx["t3"]
+
+    assert eng.state.transitions[idx1, idx2] == 0.0
+    assert "Art 2" not in eng.artist_cooccur.get("Art 1", {})
+    assert eng.state.transitions[idx1, idx3] > 0.0
+    assert "Art 3" in eng.artist_cooccur.get("Art 1", {})
+
+
+def test_decode_slice_ffmpeg_hardening_flags(monkeypatch):
+    import analyzer
+
+    cmds = []
+
+    class DummyFFmpeg:
+        def communicate(self, timeout=None):
+            return b"\x00" * 16, b""
+
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        cmds.append(cmd)
+        return DummyFFmpeg()
+
+    monkeypatch.setattr(analyzer.subprocess, "Popen", fake_popen)
+    res = analyzer._decode_slice("/opt/navidrome/music/song.mp3")
+    assert res is None
+    assert len(cmds) == 2
+    for c in cmds:
+        assert "-nostdin" in c
+        assert "-protocol_whitelist" in c
+        pw_idx = c.index("-protocol_whitelist")
+        assert c[pw_idx + 1] == "file,pipe"
+        assert c.index("-i") < c.index("-t")
+
+
+def test_analyzer_parse_cli_args_clamping():
+    import analyzer
+
+    assert analyzer.parse_cli_args(["analyzer.py", "0", "-5"]) == (1, 1)
+    assert analyzer.parse_cli_args(["analyzer.py", "999"]) == (64, None)
+    assert analyzer.parse_cli_args(["analyzer.py", "4", "100"]) == (4, 100)
+
+
+def test_security_hardening_configs_and_scripts():
+    base = config.APP_DIR
+
+    # 1. Systemd unit must protect code and .venv with ReadOnlyPaths and kernel/device sandboxing
+    with open(os.path.join(base, "navidrome-autoplay.service"), encoding="utf-8") as f:
+        unit_text = f.read()
+    assert "ReadOnlyPaths=" in unit_text
+    assert "/opt/navidrome-autoplay/.venv" in unit_text
+    assert "/opt/navidrome-autoplay/server.py" in unit_text
+    assert "PrivateDevices=true" in unit_text
+    assert "ProtectKernelTunables=true" in unit_text
+    assert "ProtectKernelModules=true" in unit_text
+    assert "ProtectControlGroups=true" in unit_text
+    assert "RestrictSUIDSGID=true" in unit_text
+    assert "LockPersonality=true" in unit_text
+
+    # 2. install.sh must not pipe curl directly into sh and must verify sha256sum
+    with open(os.path.join(base, "install.sh"), encoding="utf-8") as f:
+        install_text = f.read()
+    assert "| env UV_INSTALL_DIR=" not in install_text
+    assert "sha256sum" in install_text
+    assert "ReadOnlyPaths=" in install_text
+
+    # 3. service.sh must inspect NUL-delimited /proc/$pid/cmdline against $DIR/server.py
+    with open(os.path.join(base, "service.sh"), encoding="utf-8") as f:
+        service_text = f.read()
+    assert "tr '\\0' ' '" in service_text
+    assert "$DIR/server.py" in service_text
+
+    # 4. pyproject.toml must not declare unused scikit-learn dependency
+    with open(os.path.join(base, "pyproject.toml"), encoding="utf-8") as f:
+        pyproject_text = f.read()
+    assert "scikit-learn" not in pyproject_text
+
+
+

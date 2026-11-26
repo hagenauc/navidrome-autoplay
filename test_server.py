@@ -43,6 +43,15 @@ def test_api_similar_tracks(client):
         assert "item_id" in data[0]
         assert "distance" in data[0]
 
+    # Overly long session_id (> 128 chars) -> 400
+    long_sid = "s" * 129
+    res_long = client.get(f"/api/similar_tracks?item_id=t1&session_id={long_sid}")
+    assert res_long.status_code == 400
+
+    # Control character in session_id -> 400
+    res_ctrl = client.get("/api/similar_tracks?item_id=t1&session_id=bad%00sid")
+    assert res_ctrl.status_code == 400
+
 
 def test_api_similar_artists(client):
     res = client.get("/api/similar_artists")
@@ -85,20 +94,64 @@ def test_api_reload_auth_api_key(client, monkeypatch):
     assert res.status_code == 200
     assert res.get_json()["status"] == "reloaded"
 
-    # Valid API key in query param -> 200
+    # API key in query param must be rejected (401) to prevent secret leakage in access logs
     res = client.post("/api/reload?api_key=supersecret123")
-    assert res.status_code == 200
+    assert res.status_code == 401
 
 
-def test_api_reload_loopback_restriction(client, monkeypatch):
+def test_api_reload_loopback_restriction_and_csrf_dns_rebinding(client, monkeypatch):
     monkeypatch.setattr("config.AUTOPLAY_API_KEY", "")
 
     # Request from non-loopback IP without API key -> 403 Forbidden
     res = client.post("/api/reload", environ_overrides={"REMOTE_ADDR": "192.168.1.100"})
     assert res.status_code == 403
 
-    # Request from loopback IP -> 200 OK
+    # Cross-origin browser CSRF request from loopback with Origin header -> 403 Forbidden
+    res = client.post(
+        "/api/reload",
+        headers={"Origin": "https://malicious.example"},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert res.status_code == 403
+
+    # Cross-site Sec-Fetch-Site request -> 403 Forbidden
+    res = client.post(
+        "/api/reload",
+        headers={"Sec-Fetch-Site": "cross-site"},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert res.status_code == 403
+
+    # DNS rebinding request with non-loopback Host header -> 403 Forbidden
+    res = client.post(
+        "/api/reload",
+        headers={"Host": "rebind.attacker.example:8001"},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert res.status_code == 403
+
+    # Legitimate direct request from loopback IP -> 200 OK
     res = client.post("/api/reload", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    assert res.status_code == 200
+
+
+def test_api_non_loopback_read_requires_api_key_when_configured(client, monkeypatch):
+    monkeypatch.setattr("config.AUTOPLAY_API_KEY", "supersecret123")
+
+    # Non-loopback GET without API key -> 401
+    res = client.get("/api/similar_tracks?item_id=t1", environ_overrides={"REMOTE_ADDR": "192.168.1.100"})
+    assert res.status_code == 401
+
+    # Non-loopback GET with valid X-API-Key header -> 200
+    res = client.get(
+        "/api/similar_tracks?item_id=t1",
+        headers={"X-API-Key": "supersecret123"},
+        environ_overrides={"REMOTE_ADDR": "192.168.1.100"},
+    )
+    assert res.status_code == 200
+
+    # Localhost GET continues to work without API key for local Navidrome plugin
+    res = client.get("/api/similar_tracks?item_id=t1", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
     assert res.status_code == 200
 
 
@@ -193,3 +246,44 @@ def test_api_empty_and_single_track_endpoints(tmp_path, monkeypatch):
         res_path = c.get("/api/find_path?start_song_id=solo&end_song_id=solo")
         assert res_path.status_code == 200
         assert len(res_path.get_json()["path"]) == 1
+
+
+def test_spawn_background_analyzer_reaps_and_prevents_duplicates(monkeypatch):
+    import server
+
+    spawned = []
+
+    class DummyProc:
+        def __init__(self):
+            self.returncode = None
+            self.polled = 0
+
+        def poll(self):
+            self.polled += 1
+            return self.returncode
+
+    def fake_popen(cmd, **kwargs):
+        p = DummyProc()
+        spawned.append((cmd, p))
+        return p
+
+    monkeypatch.setattr(server, "_analyzer_proc", None, raising=False)
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+    # First call spawns analyzer
+    p1 = server.spawn_background_analyzer()
+    assert p1 is not None
+    assert len(spawned) == 1
+
+    # Second call while p1 is still running (poll() is None) must not spawn another
+    p2 = server.spawn_background_analyzer()
+    assert p2 is None
+    assert len(spawned) == 1
+    assert p1.polled >= 1
+
+    # Once p1 finishes (poll() returns 0), next call reaps p1 and spawns a new process
+    p1.returncode = 0
+    p3 = server.spawn_background_analyzer()
+    assert p3 is not None
+    assert len(spawned) == 2
+

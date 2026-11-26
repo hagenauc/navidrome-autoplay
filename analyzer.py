@@ -150,7 +150,8 @@ def extract_bpm_aubio(samples, sr=22050):
 
 def _decode_slice(full_path: str):
     """Decode 40s from offset 25s as mono float32 @ 22.05 kHz. Kills ffmpeg on timeout."""
-    cmd = ['ffmpeg', '-ss', '25', '-t', '40', '-i', full_path,
+    cmd = ['ffmpeg', '-nostdin', '-protocol_whitelist', 'file,pipe',
+           '-ss', '25', '-i', full_path, '-t', '40',
            '-f', 'f32le', '-ac', '1', '-ar', '22050', '-v', 'error', '-']
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
@@ -162,7 +163,8 @@ def _decode_slice(full_path: str):
     samples = np.frombuffer(raw, dtype=np.float32)
     if len(samples) < 22050 * 5:
         # Short track: retry from the beginning
-        proc = subprocess.Popen(['ffmpeg', '-t', '40', '-i', full_path, '-f', 'f32le', '-ac', '1',
+        proc = subprocess.Popen(['ffmpeg', '-nostdin', '-protocol_whitelist', 'file,pipe',
+                                 '-i', full_path, '-t', '40', '-f', 'f32le', '-ac', '1',
                                  '-ar', '22050', '-v', 'error', '-'],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
@@ -246,12 +248,14 @@ def analyze_track(item):
 
 def acquire_single_instance_lock():
     """Returns an open lock file, or None if another analyzer is already running."""
-    fh = open(LOCK_PATH, 'w')
+    fh = open(LOCK_PATH, 'a+')
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         fh.close()
         return None
+    fh.seek(0)
+    fh.truncate()
     fh.write(str(os.getpid()))
     fh.flush()
     return fh
@@ -273,7 +277,16 @@ def pending_track_ids(navidrome_ids, f_conn) -> set:
     return set(navidrome_ids) - done
 
 
+def parse_cli_args(argv=None):
+    if argv is None:
+        argv = sys.argv
+    workers = max(1, min(int(argv[1]), 64)) if len(argv) > 1 else max(1, mp.cpu_count() - 1)
+    limit = max(1, int(argv[2])) if len(argv) > 2 else None
+    return workers, limit
+
+
 def run_analysis(workers: int = 4, limit: int = None):
+    workers = max(1, min(int(workers), 64))
     lock = acquire_single_instance_lock()
     if lock is None:
         logger.info("Another analyzer instance is already running. Exiting.")
@@ -345,6 +358,5 @@ def run_analysis(workers: int = 4, limit: int = None):
 
 
 if __name__ == "__main__":
-    workers = int(sys.argv[1]) if len(sys.argv) > 1 else max(1, mp.cpu_count() - 1)
-    limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
-    run_analysis(workers=workers, limit=limit)
+    w, lim = parse_cli_args(sys.argv)
+    run_analysis(workers=w, limit=lim)

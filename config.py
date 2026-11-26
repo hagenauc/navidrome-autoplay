@@ -1,4 +1,5 @@
 import os
+import math
 
 # Base directory of the application (used for runtime files such as features.db)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,8 +22,8 @@ PORT = int(os.environ.get("AUTOPLAY_PORT", "8001"))
 SECONDARY_PORT = int(os.environ.get("AUTOPLAY_SECONDARY_PORT", "8000"))
 
 # Request limits (protect the service from accidental / malicious heavy requests)
-MAX_RESULTS = int(os.environ.get("AUTOPLAY_MAX_RESULTS", "200"))
-MAX_PATH_STEPS = int(os.environ.get("AUTOPLAY_MAX_PATH_STEPS", "25"))
+MAX_RESULTS = max(1, int(os.environ.get("AUTOPLAY_MAX_RESULTS", "200")))
+MAX_PATH_STEPS = max(2, int(os.environ.get("AUTOPLAY_MAX_PATH_STEPS", "25")))
 
 # Recommendation & Pacing weights
 MACRO_ANCHOR_WEIGHT = float(os.environ.get("MACRO_ANCHOR_WEIGHT", "0.40"))
@@ -30,15 +31,20 @@ LOCAL_TRANSITION_WEIGHT = float(os.environ.get("LOCAL_TRANSITION_WEIGHT", "0.40"
 
 # Stochastic Exploration / Serendipity (Spotify BaRT style)
 # Controls shuffle entropy so repeated Instant Mixes on the same track rotate through diverse viable picks
-RANDOMIZATION_TEMPERATURE = float(os.environ.get("AUTOPLAY_TEMPERATURE", "0.10"))
+_raw_temp = float(os.environ.get("AUTOPLAY_TEMPERATURE", "0.10"))
+RANDOMIZATION_TEMPERATURE = _raw_temp if (math.isfinite(_raw_temp) and _raw_temp >= 0.0) else 0.10
 
 # Fatigue & Pacing rules
-MAX_ARTIST_REPEAT_IN_QUEUE = int(os.environ.get("MAX_ARTIST_REPEAT_IN_QUEUE", "2"))
+MAX_ARTIST_REPEAT_IN_QUEUE = max(1, int(os.environ.get("MAX_ARTIST_REPEAT_IN_QUEUE", "2")))
 BPM_TOLERANCE_PCT = float(os.environ.get("BPM_TOLERANCE_PCT", "0.10"))  # 10% tempo transition window
 
+# Multi-user privacy: optionally restrict playlist graph edges to public playlists only
+PUBLIC_PLAYLISTS_ONLY = os.environ.get("AUTOPLAY_PUBLIC_PLAYLISTS_ONLY", "false").lower() == "true"
+
 # In-memory session tracking TTL (seconds) and LRU capacity cap
-SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", "7200"))
-MAX_SESSIONS = int(os.environ.get("MAX_SESSIONS", "1000"))
+SESSION_TTL_SECONDS = max(1, int(os.environ.get("SESSION_TTL_SECONDS", "7200")))
+MAX_SESSIONS = max(1, int(os.environ.get("MAX_SESSIONS", "1000")))
+MAX_SESSION_ID_LEN = max(16, int(os.environ.get("MAX_SESSION_ID_LEN", "128")))
 AUTOPLAY_API_KEY = os.environ.get("AUTOPLAY_API_KEY", "")
 
 
@@ -57,7 +63,8 @@ def resolve_db_path() -> str:
 def connect_ro(path: str):
     """Open an SQLite database read-only (never modify Navidrome's DB)."""
     import sqlite3
-    try:
-        return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
-    except sqlite3.OperationalError:
-        return sqlite3.connect(path, timeout=10)
+    from urllib.parse import quote
+    if not path or not os.path.isfile(path):
+        raise sqlite3.OperationalError(f"unable to open database file: {path}")
+    quoted = quote(os.path.abspath(path), safe="/")
+    return sqlite3.connect(f"file:{quoted}?mode=ro", uri=True, timeout=10)

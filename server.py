@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import hmac
 import threading
 import sqlite3
 import subprocess
@@ -15,6 +16,22 @@ logger = logging.getLogger("navidrome_autoplay.server")
 start_time = time.time()
 _sync_started = False
 _sync_lock = threading.Lock()
+_analyzer_proc = None
+
+
+def spawn_background_analyzer():
+    """Spawn background analyzer subprocess if one is not already running, reaping exited children."""
+    global _analyzer_proc
+    if _analyzer_proc is not None:
+        if _analyzer_proc.poll() is None:
+            return None
+        _analyzer_proc = None
+    _analyzer_proc = subprocess.Popen(
+        [sys.executable, os.path.join(config.APP_DIR, "analyzer.py"), "2"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return _analyzer_proc
 
 # Global module-level engine initialized lazily to avoid import-time side effects
 engine = AutoplayEngine(lazy=True)
@@ -81,11 +98,7 @@ def auto_feature_sync():
 
                 if pending:
                     logger.info(f"Detected {len(pending)} unanalyzed tracks in Navidrome. Spawning background analyzer...")
-                    subprocess.Popen(
-                        [sys.executable, os.path.join(config.APP_DIR, "analyzer.py"), "2"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
+                    spawn_background_analyzer()
             except Exception as e:
                 logger.exception(f"Background check error: {e}")
 
@@ -111,6 +124,24 @@ def ensure_background_sync(flask_app):
             logger.info("Background auto_feature_sync thread started.")
 
 
+_LOOPBACK_ADDRS = ("127.0.0.1", "::1", "localhost", "testclient")
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "[::1]", "localhost", "testclient", "")
+
+
+def _verify_api_key(provided: str | None, expected: str) -> bool:
+    if not provided or not expected:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _host_without_port(raw_host: str) -> str:
+    h = (raw_host or "").strip().lower()
+    if h.startswith("["):
+        end = h.find("]")
+        return h[: end + 1] if end != -1 else h
+    return h.split(":", 1)[0]
+
+
 def create_app(engine_instance=None, start_sync: bool = False) -> Flask:
     global engine
     if engine_instance is not None:
@@ -120,6 +151,12 @@ def create_app(engine_instance=None, start_sync: bool = False) -> Flask:
 
     @flask_app.before_request
     def before_request_hook():
+        remote_addr = request.remote_addr or ""
+        is_loopback = remote_addr in _LOOPBACK_ADDRS
+        if config.AUTOPLAY_API_KEY and not is_loopback:
+            if not _verify_api_key(request.headers.get("X-API-Key"), config.AUTOPLAY_API_KEY):
+                return jsonify({"error": "Unauthorized"}), 401
+
         ensure_background_sync(flask_app)
         if not flask_app.config.get("TESTING") and not engine.tracks:
             try:
@@ -154,6 +191,9 @@ def create_app(engine_instance=None, start_sync: bool = False) -> Flask:
         n = max(1, min(n, config.MAX_RESULTS))
         eliminate_dup = request.args.get("eliminate_duplicates", default="true").lower() == "true"
         session_id = request.args.get("session_id", default=None)
+        if session_id is not None:
+            if len(session_id) > config.MAX_SESSION_ID_LEN or any(ord(c) < 32 or ord(c) == 127 for c in session_id):
+                return jsonify({"error": "invalid session_id"}), 400
 
         results = engine.get_similar_tracks(
             item_id=item_id,
@@ -182,6 +222,7 @@ def create_app(engine_instance=None, start_sync: bool = False) -> Flask:
             return jsonify({"error": "start_song_id and end_song_id are required"}), 400
 
         count = request.args.get("count", default=5, type=int)
+        count = max(1, min(count, config.MAX_RESULTS))
         max_steps = request.args.get("max_steps", default=10, type=int)
         max_steps = max(2, min(max_steps, config.MAX_PATH_STEPS))
 
@@ -223,17 +264,22 @@ def create_app(engine_instance=None, start_sync: bool = False) -> Flask:
 
     @flask_app.route("/api/reload", methods=["POST"])
     def reload_db():
-        # Security: loopback or API key verification
-        api_key = request.headers.get("X-API-Key") or request.args.get("api_key")
+        # Security: constant-time API key header check or strict direct loopback verification
+        api_key = request.headers.get("X-API-Key")
         remote_addr = request.remote_addr or ""
-        is_loopback = remote_addr in ("127.0.0.1", "::1", "localhost", "testclient")
+        is_loopback = remote_addr in _LOOPBACK_ADDRS
         auth_key = config.AUTOPLAY_API_KEY
 
         if auth_key:
-            if api_key != auth_key:
+            if not _verify_api_key(api_key, auth_key):
                 return jsonify({"error": "Unauthorized"}), 401
-        elif not is_loopback:
-            return jsonify({"error": "Forbidden: reload restricted to loopback"}), 403
+        else:
+            has_cross_origin = bool(request.headers.get("Origin")) or (
+                request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site"
+            )
+            host_ok = _host_without_port(request.headers.get("Host", "")) in _LOOPBACK_HOSTS
+            if not is_loopback or has_cross_origin or not host_ok:
+                return jsonify({"error": "Forbidden: reload restricted to loopback"}), 403
 
         try:
             acquired = engine.load_database(blocking=False)

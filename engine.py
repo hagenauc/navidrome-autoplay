@@ -67,16 +67,20 @@ AUSTRO_GERMAN_ARTISTS = {
 }
 
 _AUSTRO_RE = re.compile(
-    r'\b(?:zillert\w*|österreich\w*|austria|steirisch\w*|tirol\w*|schürzenjäger|'
+    r'\b(?:zillert\w*|österreich\w*|austria|steirisch\w*|tirol\w*|kärnt\w*|schürzenjäger|'
     r'gabalier|fendrich|ambros|ötzi|spatzen|volksmusik\w*|werkskapelle\w*|'
     r'blasorchester\w*|trachtenkapelle\w*|musikkapelle\w*|blaskapelle\w*|'
     r'dorfmusikanten\w*|musikanten\w*|stadtkapelle\w*|feuerwehrmusik\w*|'
-    r'schützenmusik\w*|bergkapelle\w*|knappenkapelle\w*|oberkrainer|krainer)\b'
+    r'schützenmusik\w*|bergkapelle\w*|knappenkapelle\w*|oberkrainer|krainer|'
+    r'singkreis\w*|gesangverein\w*|männergesang\w*|viergesang|dreigesang|'
+    r'stubenmusi\w*|bauernkapelle\w*|militärmusik\w*|militärorchester\w*|'
+    r'stabsmusikkorps\w*|gebirgsmusik\w*|musikkorps\w*)\b'
 )
 
 _AUSTRO_TITLE_ALBUM_RE = re.compile(
     r'\b(?:marschmusik\w*|blasmusik\w*|almrosen|zillertal\w*|musikparade|'
-    r'schlagerparade|volksmusik\w*|walzer|polka)\b'
+    r'schlagerparade|volksmusik\w*|volkslied\w*|kärntner\s+lieder|kärntnerlied\w*|'
+    r'heimatlied\w*|alpenlied\w*|märsche|walzer|polka)\b'
 )
 
 _HOLIDAY_RE = re.compile(
@@ -228,7 +232,7 @@ _C = {name: i for i, name in enumerate(CLUSTERS)}
 # ---------------------------------------------------------------------------
 
 class SessionContext:
-    MAX_REMEMBERED_RECS = 500
+    MAX_REMEMBERED_RECS = 100
 
     def __init__(self, seed_id: str, seed_artist: str = ""):
         self.seed_id = seed_id
@@ -306,8 +310,7 @@ def _apply_features(tracks: dict, features_db_path: str) -> int:
     """Overlay analyzer results onto track dicts. Energy becomes a 0..1 library percentile."""
     if not features_db_path or not os.path.exists(features_db_path):
         return 0
-    import sqlite3
-    conn = sqlite3.connect(f"file:{features_db_path}?mode=ro", uri=True, timeout=10)
+    conn = config.connect_ro(features_db_path)
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(track_features)").fetchall()}
         has_status = "status" in cols
@@ -685,8 +688,15 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
         # 5e. Playlists
         try:
             playlists = defaultdict(list)
-            for pid, mfid in c.execute(
-                    "SELECT playlist_id, media_file_id FROM playlist_tracks ORDER BY playlist_id, id"):
+            if getattr(config, "PUBLIC_PLAYLISTS_ONLY", False) and "playlist" in tables:
+                pl_sql = (
+                    "SELECT pt.playlist_id, pt.media_file_id "
+                    "FROM playlist_tracks pt JOIN playlist p ON pt.playlist_id = p.id "
+                    "WHERE COALESCE(p.public, 0) = 1 ORDER BY pt.playlist_id, pt.id"
+                )
+            else:
+                pl_sql = "SELECT playlist_id, media_file_id FROM playlist_tracks ORDER BY playlist_id, id"
+            for pid, mfid in c.execute(pl_sql):
                 if mfid in idx:
                     playlists[pid].append(mfid)
             for pts in playlists.values():
@@ -712,9 +722,10 @@ def build_state(db_path: str, features_db_path: str) -> EngineState:
 class AutoplayEngine:
     def __init__(self, db_path: str = None, features_db_path: str = None, lazy: bool = False):
         self.db_path = db_path
-        self.features_db_path = features_db_path or config.FEATURES_DB_PATH
+        self.features_db_path = config.FEATURES_DB_PATH if features_db_path is None else features_db_path
         self.state = EngineState()
         self.sessions = OrderedDict()
+        self._last_ttl_sweep = 0.0
         self._sess_lock = threading.Lock()
         self._reload_lock = threading.Lock()
 
@@ -925,10 +936,19 @@ class AutoplayEngine:
         artist = st.tracks[item_id]['artist']
         now = time.time()
         with self._sess_lock:
-            # 1. TTL eviction
-            expired = [k for k, v in self.sessions.items() if (now - v.last_activity) > config.SESSION_TTL_SECONDS]
-            for k in expired:
-                del self.sessions[k]
+            # 1. O(1) front TTL eviction + throttled full sweep when near capacity or interval elapsed
+            ttl = config.SESSION_TTL_SECONDS
+            while self.sessions:
+                _, oldest = next(iter(self.sessions.items()))
+                if (now - oldest.last_activity) > ttl:
+                    self.sessions.popitem(last=False)
+                else:
+                    break
+            if len(self.sessions) >= config.MAX_SESSIONS or (now - self._last_ttl_sweep) >= min(60.0, ttl):
+                self._last_ttl_sweep = now
+                expired = [k for k, v in self.sessions.items() if (now - v.last_activity) > ttl]
+                for k in expired:
+                    del self.sessions[k]
 
             sess = self.sessions.get(key)
             if sess is None:
@@ -1034,8 +1054,9 @@ class AutoplayEngine:
             if len(results) >= n:
                 break
 
-        with self._sess_lock:
-            sess.remember_recs(r['item_id'] for r in results)
+        if not session_id:
+            with self._sess_lock:
+                sess.remember_recs(r['item_id'] for r in results)
         return results
 
     def get_similar_artists(self, artist_identifier: str, count: int = 10) -> list[dict]:

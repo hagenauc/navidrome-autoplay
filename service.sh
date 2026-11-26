@@ -17,7 +17,10 @@ fi
 is_autoplay_process() {
     local pid="$1"
     if [ -f "/proc/$pid/cmdline" ]; then
-        if grep -q -E "server\.py|gunicorn|navidrome-autoplay" "/proc/$pid/cmdline" 2>/dev/null; then
+        local cmdline
+        cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+        if printf '%s' "$cmdline" | grep -F -q "$DIR/server.py" 2>/dev/null || \
+           printf '%s' "$cmdline" | grep -F -q "navidrome-autoplay" 2>/dev/null; then
             return 0
         fi
     fi

@@ -63,7 +63,28 @@ fi
 echo -e "${YELLOW}[2/5] Setting up uv and syncing Python dependencies...${RESET}"
 export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 if ! command -v uv &>/dev/null; then
-    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh
+    UV_VERSION="${UV_VERSION:-0.10.2}"
+    ARCH="$(uname -m)"
+    case "$ARCH" in
+        x86_64)  UV_TARGET="x86_64-unknown-linux-gnu" ;;
+        aarch64) UV_TARGET="aarch64-unknown-linux-gnu" ;;
+        *)
+            echo -e "${RED}[ERROR] Unsupported architecture ($ARCH) for automatic uv download. Please install uv manually.${RESET}"
+            exit 1
+            ;;
+    esac
+    TMP_UV_DIR="$(mktemp -d)"
+    trap 'rm -rf "$TMP_UV_DIR"' EXIT
+    UV_BASE_URL="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}"
+    UV_ARCHIVE="uv-${UV_TARGET}.tar.gz"
+    curl --proto '=https' --tlsv1.2 -LsSf "${UV_BASE_URL}/${UV_ARCHIVE}" -o "${TMP_UV_DIR}/${UV_ARCHIVE}"
+    curl --proto '=https' --tlsv1.2 -LsSf "${UV_BASE_URL}/${UV_ARCHIVE}.sha256" -o "${TMP_UV_DIR}/${UV_ARCHIVE}.sha256"
+    (cd "$TMP_UV_DIR" && sha256sum -c "${UV_ARCHIVE}.sha256")
+    mkdir -p "$HOME/.local/bin"
+    tar -xzf "${TMP_UV_DIR}/${UV_ARCHIVE}" -C "$TMP_UV_DIR"
+    install -m 0755 "${TMP_UV_DIR}/uv-${UV_TARGET}/uv" "$HOME/.local/bin/uv"
+    rm -rf "$TMP_UV_DIR"
+    trap - EXIT
 fi
 UV_BIN="$(command -v uv || echo "$HOME/.local/bin/uv")"
 VENV_DIR="$APP_DIR/.venv"
@@ -158,9 +179,16 @@ Environment=AUTOPLAY_HOST=127.0.0.1
 # Sandboxing & Hardening
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=$PROTECT_HOME
-ReadWritePaths=$APP_DIR /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=$APP_DIR
+ReadOnlyPaths=$VENV_DIR $APP_DIR/server.py $APP_DIR/engine.py $APP_DIR/analyzer.py $APP_DIR/config.py $APP_DIR/install.sh $APP_DIR/service.sh $APP_DIR/pyproject.toml $APP_DIR/uv.lock
 
 [Install]
 WantedBy=multi-user.target

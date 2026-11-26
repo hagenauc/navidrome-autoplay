@@ -174,7 +174,7 @@ These settings can be changed with environment variables:
 | `BPM_TOLERANCE_PCT` | `0.10` | Tempo difference allowed before a penalty applies (10%) |
 | `SESSION_TTL_SECONDS` | `7200` | In-memory session expiration time in seconds |
 | `MAX_SESSIONS` | `1000` | Maximum number of active sessions kept in the LRU cache |
-| `AUTOPLAY_API_KEY` | `""` | Optional API key required for `POST /api/reload` (`X-API-Key` header or `api_key` query param) |
+| `AUTOPLAY_API_KEY` | `""` | Optional API key required for `POST /api/reload` and non-loopback API requests (`X-API-Key` header) |
 
 ---
 

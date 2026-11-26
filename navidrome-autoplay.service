@@ -18,9 +18,16 @@ Environment=AUTOPLAY_HOST=127.0.0.1
 # Sandboxing & Hardening
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/navidrome-autoplay /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/opt/navidrome-autoplay
+ReadOnlyPaths=/opt/navidrome-autoplay/.venv /opt/navidrome-autoplay/server.py /opt/navidrome-autoplay/engine.py /opt/navidrome-autoplay/analyzer.py /opt/navidrome-autoplay/config.py /opt/navidrome-autoplay/install.sh /opt/navidrome-autoplay/service.sh /opt/navidrome-autoplay/pyproject.toml /opt/navidrome-autoplay/uv.lock
 
 [Install]
 WantedBy=multi-user.target
